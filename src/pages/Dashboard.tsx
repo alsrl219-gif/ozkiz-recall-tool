@@ -97,7 +97,7 @@ export default function Dashboard() {
           value={formatNumber(stats.total)}
           sub={`총 ${formatNumber(stats.totalSuggestedQty)}개`}
           icon={Package}
-          accent="indigo"
+          accent="orange"
         />
         <StatCard
           label="긴급 회수"
@@ -111,7 +111,7 @@ export default function Dashboard() {
           value={formatNumber(stats.inTransit)}
           sub="진행 중"
           icon={TrendingUp}
-          accent="purple"
+          accent="amber"
         />
         <StatCard
           label="입고 완료"
@@ -370,11 +370,11 @@ function DataStatusPanel() {
 }
 
 // ─── 통계 카드 ────────────────────────────────────────────────────
-type AccentColor = 'indigo' | 'red' | 'purple' | 'green'
+type AccentColor = 'orange' | 'red' | 'amber' | 'green'
 const ACCENT: Record<AccentColor, { icon: string; top: string; val: string }> = {
-  indigo: { icon: 'bg-indigo-50 text-indigo-500', top: 'bg-indigo-500', val: 'text-indigo-600' },
+  orange: { icon: 'bg-orange-50 text-orange-500', top: 'bg-orange-500', val: 'text-orange-600' },
   red:    { icon: 'bg-red-50 text-red-500',       top: 'bg-red-500',    val: 'text-red-600' },
-  purple: { icon: 'bg-purple-50 text-purple-500', top: 'bg-purple-500', val: 'text-purple-600' },
+  amber:  { icon: 'bg-amber-50 text-amber-500',   top: 'bg-amber-400',  val: 'text-amber-600' },
   green:  { icon: 'bg-green-50 text-green-500',   top: 'bg-green-500',  val: 'text-green-600' },
 }
 

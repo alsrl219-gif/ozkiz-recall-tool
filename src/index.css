@@ -8,7 +8,7 @@
     -moz-osx-font-smoothing: grayscale;
   }
   body {
-    @apply text-gray-900 bg-[#F7F8FC];
+    @apply text-gray-900 bg-[#FFF8F3];
   }
   * {
     box-sizing: border-box;
