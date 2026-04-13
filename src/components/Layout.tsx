@@ -69,19 +69,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* 사이드바 */}
       <aside
         className={cn(
-          'fixed lg:relative inset-y-0 left-0 z-30 w-60 bg-[#1A0F07] flex flex-col transition-transform duration-200',
+          'fixed lg:relative inset-y-0 left-0 z-30 w-60 bg-white border-r border-gray-100 flex flex-col transition-transform duration-200',
           sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         )}
       >
         {/* 로고 */}
-        <div className="h-14 flex items-center gap-3 px-5 border-b border-white/10">
+        <div className="h-14 flex items-center gap-3 px-5 border-b border-gray-100">
           <span className="text-2xl leading-none flex-shrink-0">🚚</span>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-bold text-white tracking-tight leading-none">OZKIZ</div>
-            <div className="text-[9px] text-orange-400/60 font-medium tracking-widest uppercase mt-0.5">Recall Tool</div>
+            <div className="text-sm font-bold text-gray-900 tracking-tight leading-none">OZKIZ</div>
+            <div className="text-[9px] text-brand-500 font-semibold tracking-widest uppercase mt-0.5">Recall Tool</div>
           </div>
           <button
-            className="lg:hidden text-white/30 hover:text-white/80 p-0.5"
+            className="lg:hidden text-gray-400 hover:text-gray-700 p-0.5"
             onClick={() => setSidebarOpen(false)}
           >
             <X className="w-4 h-4" />
@@ -100,8 +100,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 cn(
                   'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all group',
                   isActive
-                    ? 'bg-brand-500/20 text-brand-300'
-                    : 'text-white/40 hover:bg-white/8 hover:text-white/90'
+                    ? 'bg-brand-50 text-brand-700'
+                    : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
                 )
               }
             >
@@ -110,7 +110,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <Icon
                     className={cn(
                       'w-4 h-4 flex-shrink-0 transition-colors',
-                      isActive ? 'text-brand-400' : 'text-white/30 group-hover:text-white/70'
+                      isActive ? 'text-brand-500' : 'text-gray-400 group-hover:text-gray-600'
                     )}
                   />
                   <span className="flex-1 truncate">{label}</span>
@@ -119,7 +119,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                       {urgentCount}
                     </span>
                   )}
-                  {isActive && <ChevronRight className="w-3 h-3 text-brand-600/60 flex-shrink-0" />}
+                  {isActive && <ChevronRight className="w-3 h-3 text-brand-400 flex-shrink-0" />}
                 </>
               )}
             </NavLink>
@@ -127,14 +127,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </nav>
 
         {/* 분석 실행 버튼 */}
-        <div className="p-3 border-t border-white/10 space-y-2">
+        <div className="p-3 border-t border-gray-100 space-y-2">
           {toast && (
             <div
               className={cn(
                 'flex items-start gap-2 px-3 py-2 rounded-xl text-xs font-medium',
                 toast.ok
-                  ? 'bg-green-500/15 text-green-400'
-                  : 'bg-amber-500/15 text-amber-400'
+                  ? 'bg-green-50 text-green-700'
+                  : 'bg-amber-50 text-amber-700'
               )}
             >
               {toast.ok
