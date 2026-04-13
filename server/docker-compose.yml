@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  ozkiz-server:
+    build: .
+    container_name: ozkiz-rt-server
+    ports:
+      - "3001:3001"
+    volumes:
+      # 처리된 데이터 (영구 보관)
+      - ./data:/app/data
+      # 다운로드 임시 파일
+      - ./downloads:/app/downloads
+      # 설정 파일 (읽기 전용)
+      - ./.env:/app/.env:ro
+      # 셀렉터/계정 설정 (앱에서 저장)
+      - ./config.json:/app/config.json
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Seoul
+      - NODE_ENV=production

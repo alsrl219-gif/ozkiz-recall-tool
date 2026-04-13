@@ -1,0 +1,30 @@
+{
+  "name": "ozkiz-rt-server",
+  "version": "1.0.0",
+  "description": "OZKIZ 재고회수툴 - 자동 데이터 수집 서버",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "scrape": "tsx src/scrapers/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "express": "^4.21.1",
+    "playwright": "^1.48.2",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.4.5",
+    "papaparse": "^5.4.1",
+    "date-fns": "^3.6.0",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/cors": "^2.8.17",
+    "@types/papaparse": "^5.3.14",
+    "@types/node": "^22.8.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
