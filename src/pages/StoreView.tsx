@@ -1,186 +1,243 @@
 import { useState, useMemo } from 'react'
-import { Search, Package, ArrowRight, MapPin, Phone, CheckCircle } from 'lucide-react'
+import {
+  Search, Package, ChevronDown, ChevronRight,
+  Store, AlertTriangle, CheckCircle2, ArrowRight,
+} from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import { PriorityBadge, ScoreBar, StatusBadge } from '../components/RecallPriorityBadge'
+import { PriorityBadge, StatusBadge } from '../components/RecallPriorityBadge'
 import StoreRecallModal from '../components/StoreRecallModal'
 import { cn, formatNumber } from '../utils/helpers'
-import type { RecallItem, Store } from '../types'
+import type { RecallItem } from '../types'
 
 export default function StoreView() {
-  const { stores, settings, recallItems, storeStocks, getProduct } = useAppStore()
-  const allStores = settings.stores.length ? settings.stores : stores
-
-  const [selectedStoreId, setSelectedStoreId] = useState<string>(allStores[0]?.id ?? '')
+  const { products, storeStocks, stores, centerStocks, recallItems, getStore } = useAppStore()
   const [search, setSearch] = useState('')
+  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [selectedItem, setSelectedItem] = useState<RecallItem | null>(null)
+  const [filterMode, setFilterMode] = useState<'all' | 'recall'>('all')
 
-  const storeRecalls = useMemo(() =>
-    recallItems.filter(
-      (r) => r.storeId === selectedStoreId && r.status !== 'received' && r.status !== 'cancelled'
-    ),
-    [recallItems, selectedStoreId]
-  )
+  // 매장 재고가 있는 상품만
+  const stockedProductIds = useMemo(() => {
+    return new Set(storeStocks.filter((s) => s.qty > 0).map((s) => s.productId))
+  }, [storeStocks])
 
-  const storeInventory = useMemo(() =>
-    storeStocks.filter((s) => s.storeId === selectedStoreId && s.qty > 0),
-    [storeStocks, selectedStoreId]
-  )
+  // 상품별 집계
+  const productList = useMemo(() => {
+    return products
+      .filter((p) => stockedProductIds.has(p.id))
+      .map((p) => {
+        const myStocks = storeStocks.filter((s) => s.productId === p.id && s.qty > 0)
+        const totalStoreQty = myStocks.reduce((s, i) => s + i.qty, 0)
+        const centerQty = centerStocks.find((c) => c.productId === p.id)?.qty ?? 0
+        const myRecalls = recallItems.filter(
+          (r) => r.productId === p.id && r.status !== 'received' && r.status !== 'cancelled'
+        )
+        const urgentCount = myRecalls.filter((r) => r.priority === 'urgent').length
+        const hasRecall = myRecalls.length > 0
+        return { product: p, myStocks, totalStoreQty, centerQty, myRecalls, urgentCount, hasRecall }
+      })
+      .filter((row) => filterMode === 'all' || row.hasRecall)
+      .filter((row) => {
+        if (!search) return true
+        const q = search.toLowerCase()
+        return (
+          row.product.id.toLowerCase().includes(q) ||
+          row.product.name.toLowerCase().includes(q)
+        )
+      })
+      .sort((a, b) => b.urgentCount - a.urgentCount || b.myRecalls.length - a.myRecalls.length)
+  }, [products, storeStocks, centerStocks, recallItems, search, filterMode, stockedProductIds])
 
-  const filtered = useMemo(() => {
-    if (!search) return storeRecalls
-    const q = search.toLowerCase()
-    return storeRecalls.filter((r) => {
-      const p = getProduct(r.productId)
-      return r.productId.toLowerCase().includes(q) || p?.name.toLowerCase().includes(q)
-    })
-  }, [storeRecalls, search, getProduct])
-
-  const currentStore = allStores.find((s) => s.id === selectedStoreId)
-  const urgentCount = storeRecalls.filter((r) => r.priority === 'urgent').length
-  const totalQty = storeRecalls.reduce((s, r) => s + r.suggestedQty, 0)
+  const totalRecallProducts = products.filter((p) =>
+    recallItems.some((r) => r.productId === p.id && r.status !== 'received' && r.status !== 'cancelled')
+  ).length
 
   return (
-    <div className="p-4 lg:p-6 max-w-6xl mx-auto space-y-5">
-      {/* 매장 선택 */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="flex-1">
-          <label className="block text-xs font-medium text-gray-500 mb-1.5">매장 선택</label>
-          {allStores.length === 0 ? (
-            <div className="text-sm text-gray-400 py-2">
-              매장 데이터가 없습니다. 이지체인 데이터를 업로드하거나 설정에서 매장을 추가해주세요.
-            </div>
-          ) : (
-            <select
-              value={selectedStoreId}
-              onChange={(e) => setSelectedStoreId(e.target.value)}
-              className="w-full sm:w-64 text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-brand-300"
-            >
-              {allStores.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} {s.region ? `(${s.region})` : ''}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
+    <div className="p-4 lg:p-6 max-w-5xl mx-auto space-y-4">
+      {/* 요약 */}
+      <div className="grid grid-cols-3 gap-3">
+        <SummaryCard
+          label="재고 보유 상품"
+          value={stockedProductIds.size}
+          sub="매장 재고 있음"
+          color="text-gray-700"
+        />
+        <SummaryCard
+          label="회수 대상 SKU"
+          value={totalRecallProducts}
+          sub="분석 결과"
+          color="text-brand-600"
+        />
+        <SummaryCard
+          label="전체 매장"
+          value={stores.length}
+          sub="등록된 매장"
+          color="text-gray-700"
+        />
       </div>
 
-      {currentStore && (
-        <>
-          {/* 매장 정보 카드 */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-card p-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <h2 className="text-lg font-bold text-gray-900">{currentStore.name}</h2>
-                  {currentStore.region && (
-                    <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full flex items-center gap-1">
-                      <MapPin className="w-3 h-3" />{currentStore.region}
-                    </span>
+      {/* 검색 + 필터 */}
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="SKU 코드 또는 상품명 검색..."
+            className="w-full pl-8 pr-3 h-9 text-sm border border-gray-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-brand-300"
+          />
+        </div>
+        <button
+          onClick={() => setFilterMode(filterMode === 'all' ? 'recall' : 'all')}
+          className={cn(
+            'px-3 h-9 text-xs font-semibold rounded-xl border transition-colors whitespace-nowrap',
+            filterMode === 'recall'
+              ? 'bg-brand-500 text-white border-brand-500'
+              : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+          )}
+        >
+          {filterMode === 'recall' ? '✓ 회수 대상만' : '회수 대상만'}
+        </button>
+      </div>
+
+      {/* SKU 목록 */}
+      {productList.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
+          <Package className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+          <p className="text-sm text-gray-500">
+            {stockedProductIds.size === 0
+              ? '이지체인 매장 재고 데이터를 먼저 업로드하세요'
+              : '검색 결과가 없습니다'}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {productList.map(({ product, myStocks, totalStoreQty, centerQty, myRecalls, urgentCount }) => {
+            const isExpanded = expandedId === product.id
+            return (
+              <div
+                key={product.id}
+                className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden"
+              >
+                {/* 상품 헤더 행 */}
+                <button
+                  onClick={() => setExpandedId(isExpanded ? null : product.id)}
+                  className="w-full flex items-center gap-4 px-4 py-3.5 hover:bg-gray-50/60 transition-colors text-left"
+                >
+                  {/* 이미지 */}
+                  {product.imageUrl ? (
+                    <img
+                      src={product.imageUrl}
+                      alt=""
+                      className="w-10 h-10 rounded-xl object-cover flex-shrink-0 bg-gray-100"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0">
+                      <Package className="w-4 h-4 text-gray-400" />
+                    </div>
                   )}
-                </div>
-                {currentStore.phone && (
-                  <div className="flex items-center gap-1.5 text-xs text-gray-500">
-                    <Phone className="w-3.5 h-3.5" />{currentStore.phone}
+
+                  {/* 상품 정보 */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-gray-900 truncate">
+                        {product.name}
+                      </span>
+                      {urgentCount > 0 && (
+                        <span className="flex items-center gap-1 text-[10px] font-bold bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">
+                          <AlertTriangle className="w-2.5 h-2.5" />
+                          긴급 {urgentCount}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-gray-400 font-mono mt-0.5">{product.id}</div>
+                  </div>
+
+                  {/* 재고 요약 */}
+                  <div className="hidden sm:flex items-center gap-5 text-center flex-shrink-0">
+                    <div>
+                      <div className="text-sm font-bold text-gray-900 tabular-nums">{formatNumber(totalStoreQty)}</div>
+                      <div className="text-[10px] text-gray-400">매장 재고</div>
+                    </div>
+                    <div>
+                      <div className={cn('text-sm font-bold tabular-nums', centerQty === 0 ? 'text-red-500' : 'text-gray-900')}>
+                        {formatNumber(centerQty)}
+                      </div>
+                      <div className="text-[10px] text-gray-400">센터 재고</div>
+                    </div>
+                    <div>
+                      <div className={cn('text-sm font-bold tabular-nums', myRecalls.length > 0 ? 'text-brand-600' : 'text-gray-400')}>
+                        {myRecalls.length}
+                      </div>
+                      <div className="text-[10px] text-gray-400">회수 대상</div>
+                    </div>
+                    <div className="text-[10px] text-gray-400">
+                      {myStocks.length}개 매장
+                    </div>
+                  </div>
+
+                  {isExpanded
+                    ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                    : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                  }
+                </button>
+
+                {/* 펼쳐진 매장별 상세 */}
+                {isExpanded && (
+                  <div className="border-t border-gray-100">
+                    {/* 모바일용 요약 */}
+                    <div className="sm:hidden flex gap-4 px-4 py-2 bg-gray-50 text-xs text-gray-500 border-b border-gray-100">
+                      <span>매장재고 <strong>{totalStoreQty}</strong></span>
+                      <span>센터재고 <strong className={centerQty === 0 ? 'text-red-500' : ''}>{centerQty}</strong></span>
+                      <span>회수대상 <strong>{myRecalls.length}</strong></span>
+                    </div>
+
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-gray-50/80 border-b border-gray-100">
+                          <th className="text-left px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+                            <div className="flex items-center gap-1.5">
+                              <Store className="w-3 h-3" /> 매장
+                            </div>
+                          </th>
+                          <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">매장 재고</th>
+                          <th className="text-center px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">회수 상태</th>
+                          <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">권장 수량</th>
+                          <th className="px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide text-right">액션</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {myStocks
+                          .sort((a, b) => {
+                            // 회수 대상 매장 먼저
+                            const aR = myRecalls.find((r) => r.storeId === a.storeId)
+                            const bR = myRecalls.find((r) => r.storeId === b.storeId)
+                            if (aR && !bR) return -1
+                            if (!aR && bR) return 1
+                            return b.qty - a.qty
+                          })
+                          .map((stock) => {
+                            const store = getStore(stock.storeId)
+                            const recall = myRecalls.find((r) => r.storeId === stock.storeId)
+                            return (
+                              <StoreStockRow
+                                key={stock.storeId}
+                                storeName={store?.name ?? stock.storeId}
+                                qty={stock.qty}
+                                recall={recall ?? null}
+                                onAction={recall ? () => setSelectedItem(recall) : undefined}
+                              />
+                            )
+                          })}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
-              <div className="flex gap-4 text-center">
-                <div>
-                  <div className="text-2xl font-bold text-gray-900">{storeRecalls.length}</div>
-                  <div className="text-xs text-gray-500">회수 대상</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-bold text-red-600">{urgentCount}</div>
-                  <div className="text-xs text-gray-500">긴급</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-bold text-brand-600">{totalQty}</div>
-                  <div className="text-xs text-gray-500">총 수량</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* 회수 목록 */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-card overflow-hidden">
-            <div className="p-4 border-b border-gray-100 flex items-center gap-3">
-              <h3 className="text-sm font-semibold text-gray-900 flex-1">회수 권장 상품</h3>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="상품 검색..."
-                  className="pl-8 pr-3 h-8 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:outline-none focus:ring-2 focus:ring-brand-300"
-                />
-              </div>
-            </div>
-
-            {filtered.length === 0 ? (
-              <div className="text-center py-12">
-                <CheckCircle className="w-10 h-10 text-green-400 mx-auto mb-3" />
-                <div className="text-sm font-medium text-gray-700">회수 대상 상품이 없습니다</div>
-                <div className="text-xs text-gray-400 mt-1">
-                  {search ? '검색 조건을 바꿔보세요' : '이 매장은 현재 정상 상태입니다'}
-                </div>
-              </div>
-            ) : (
-              <div className="divide-y divide-gray-50">
-                {filtered.map((item) => (
-                  <StoreRecallCard
-                    key={item.id}
-                    item={item}
-                    onAction={() => setSelectedItem(item)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* 매장 전체 재고 현황 */}
-          {storeInventory.length > 0 && (
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-card overflow-hidden">
-              <div className="p-4 border-b border-gray-100">
-                <h3 className="text-sm font-semibold text-gray-900">
-                  매장 전체 재고 ({storeInventory.length}종)
-                </h3>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 border-b border-gray-100">
-                    <tr>
-                      <th className="text-left px-4 py-2.5 text-xs text-gray-500 font-medium">상품코드</th>
-                      <th className="text-left px-4 py-2.5 text-xs text-gray-500 font-medium">상품명</th>
-                      <th className="text-right px-4 py-2.5 text-xs text-gray-500 font-medium">재고</th>
-                      <th className="text-left px-4 py-2.5 text-xs text-gray-500 font-medium">회수 상태</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {storeInventory.map((stock) => {
-                      const product = getProduct(stock.productId)
-                      const recall = recallItems.find(
-                        (r) => r.productId === stock.productId && r.storeId === stock.storeId
-                      )
-                      return (
-                        <tr key={stock.productId} className="hover:bg-gray-50/50">
-                          <td className="px-4 py-2.5 text-xs text-gray-400">{stock.productId}</td>
-                          <td className="px-4 py-2.5 text-gray-800">{product?.name ?? stock.productId}</td>
-                          <td className="px-4 py-2.5 text-right font-semibold tabular-nums">{formatNumber(stock.qty)}</td>
-                          <td className="px-4 py-2.5">
-                            {recall ? <StatusBadge status={recall.status} /> : (
-                              <span className="text-xs text-gray-400">회수 불필요</span>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </>
+            )
+          })}
+        </div>
       )}
 
       {selectedItem && (
@@ -190,84 +247,117 @@ export default function StoreView() {
   )
 }
 
-function StoreRecallCard({ item, onAction }: { item: RecallItem; onAction: () => void }) {
-  const { getProduct, updateRecallStatus } = useAppStore()
-  const product = getProduct(item.productId)
+// ─── 매장 행 ────────────────────────────────────────────────────
+function StoreStockRow({
+  storeName, qty, recall, onAction,
+}: {
+  storeName: string
+  qty: number
+  recall: RecallItem | null
+  onAction?: () => void
+}) {
+  const { updateRecallStatus } = useAppStore()
+  const hasRecall = !!recall
 
   return (
-    <div className={cn(
-      'p-4 flex items-start gap-4 transition-colors',
-      item.priority === 'urgent' ? 'bg-red-50/30 border-l-4 border-red-400' :
-      item.priority === 'high' ? 'bg-orange-50/20 border-l-4 border-orange-300' :
-      'border-l-4 border-transparent'
+    <tr className={cn(
+      'border-b border-gray-50 last:border-0 transition-colors',
+      hasRecall ? 'hover:bg-brand-50/30' : 'hover:bg-gray-50/40'
     )}>
-      {product?.imageUrl ? (
-        <img
-          src={product.imageUrl}
-          alt={product.name}
-          className="w-12 h-12 rounded-xl object-cover flex-shrink-0 bg-gray-100"
-          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-        />
-      ) : (
-        <div className="w-12 h-12 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0">
-          <Package className="w-5 h-5 text-gray-400" />
+      {/* 매장명 */}
+      <td className="px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          {hasRecall ? (
+            <span className={cn(
+              'w-1.5 h-1.5 rounded-full flex-shrink-0',
+              recall!.priority === 'urgent' ? 'bg-red-500' :
+              recall!.priority === 'high' ? 'bg-orange-400' :
+              recall!.priority === 'medium' ? 'bg-yellow-400' : 'bg-gray-300'
+            )} />
+          ) : (
+            <span className="w-1.5 h-1.5 rounded-full bg-gray-200 flex-shrink-0" />
+          )}
+          <span className="text-sm text-gray-800">{storeName}</span>
         </div>
-      )}
+      </td>
 
-      <div className="flex-1 min-w-0">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <div className="font-semibold text-gray-900 text-sm">
-              {product?.name ?? item.productId}
-            </div>
-            <div className="text-xs text-gray-400 mt-0.5">{item.productId}</div>
+      {/* 매장 재고 */}
+      <td className="px-3 py-2.5 text-right">
+        <span className="text-sm font-semibold tabular-nums text-gray-900">
+          {formatNumber(qty)}개
+        </span>
+      </td>
+
+      {/* 회수 상태 */}
+      <td className="px-3 py-2.5 text-center">
+        {recall ? (
+          <div className="flex items-center justify-center gap-1.5">
+            <PriorityBadge priority={recall.priority} />
+            <StatusBadge status={recall.status} />
           </div>
-          <PriorityBadge priority={item.priority} />
-        </div>
-
-        <div className="mt-2 mb-1">
-          <ScoreBar score={item.recallScore} />
-        </div>
-
-        {item.reason && (
-          <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">{item.reason}</p>
+        ) : (
+          <div className="flex items-center justify-center gap-1 text-[11px] text-gray-400">
+            <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
+            회수 불필요
+          </div>
         )}
+      </td>
 
-        <div className="flex items-center gap-4 mt-3">
-          <div className="flex items-center gap-1.5 text-xs">
-            <ArrowRight className="w-3.5 h-3.5 text-brand-500" />
-            <span className="text-gray-600">권장 <strong>{formatNumber(item.suggestedQty)}개</strong></span>
-          </div>
-          <StatusBadge status={item.status} />
-        </div>
-      </div>
+      {/* 권장 수량 */}
+      <td className="px-3 py-2.5 text-right">
+        {recall ? (
+          <span className="text-sm font-bold text-brand-600 tabular-nums">
+            <ArrowRight className="w-3 h-3 inline mr-0.5 opacity-60" />
+            {formatNumber(recall.suggestedQty)}개
+          </span>
+        ) : (
+          <span className="text-xs text-gray-300">—</span>
+        )}
+      </td>
 
-      <div className="flex flex-col gap-2 flex-shrink-0">
-        {item.status === 'recommended' && (
+      {/* 액션 */}
+      <td className="px-3 py-2.5 text-right">
+        {recall?.status === 'recommended' && (
           <button
             onClick={onAction}
-            className="px-3 py-2 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-xl transition-colors whitespace-nowrap"
+            className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors"
           >
             회수 요청
           </button>
         )}
-        {item.status === 'requested' && (
+        {recall?.status === 'requested' && (
           <button
-            onClick={() => updateRecallStatus(item.id, 'in-transit')}
-            className="px-3 py-2 bg-purple-500 hover:bg-purple-600 text-white text-xs font-semibold rounded-xl transition-colors whitespace-nowrap"
+            onClick={() => updateRecallStatus(recall.id, 'in-transit')}
+            className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors"
           >
             이송 처리
           </button>
         )}
-        {item.status === 'in-transit' && (
+        {recall?.status === 'in-transit' && (
           <button
-            onClick={() => updateRecallStatus(item.id, 'received', item.requestedQty)}
-            className="px-3 py-2 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-xl transition-colors whitespace-nowrap"
+            onClick={() => updateRecallStatus(recall.id, 'received', recall.requestedQty)}
+            className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors"
           >
             입고 확인
           </button>
         )}
-      </div>
+        {recall?.status === 'received' && (
+          <span className="text-[11px] text-green-500 font-medium">완료</span>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+// ─── 요약 카드 ───────────────────────────────────────────────────
+function SummaryCard({ label, value, sub, color }: {
+  label: string; value: number; sub: string; color: string
+}) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+      <div className={cn('text-2xl font-bold tabular-nums', color)}>{formatNumber(value)}</div>
+      <div className="text-xs font-medium text-gray-700 mt-0.5">{label}</div>
+      <div className="text-[11px] text-gray-400 mt-0.5">{sub}</div>
     </div>
   )
 }
