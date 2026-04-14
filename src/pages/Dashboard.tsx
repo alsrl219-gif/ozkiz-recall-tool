@@ -1,33 +1,23 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import {
-  AlertTriangle,
-  Package,
-  TrendingUp,
-  CheckCircle,
-  Search,
-  Filter,
-  ArrowUpDown,
-  ChevronDown,
-  CheckCircle2,
-  XCircle,
-  AlertCircle,
-  Layers,
-  Download,
-  Send,
-  Square,
-  CheckSquare,
-  Loader2,
+  AlertTriangle, Package, TrendingUp, CheckCircle,
+  Search, Filter, ChevronDown, ChevronRight,
+  CheckCircle2, XCircle, AlertCircle, Layers,
+  Download, Send, Square, CheckSquare, Loader2, Undo2,
+  Store, Warehouse,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAppStore } from '../store/useAppStore'
-import { PriorityBadge, StatusBadge, ScoreBar } from '../components/RecallPriorityBadge'
+import { PriorityBadge, StatusBadge } from '../components/RecallPriorityBadge'
 import StoreRecallModal from '../components/StoreRecallModal'
 import { cn, formatNumber } from '../utils/helpers'
 import type { RecallItem, RecallPriority, RecallStatus } from '../types'
 
-type SortKey = 'recallScore' | 'suggestedQty' | 'priority' | 'status'
+const PAGE_SIZE = 25
 const PRIORITY_ORDER: Record<RecallPriority, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
-const PAGE_SIZE = 30
+const PRIORITY_DOT: Record<RecallPriority, string> = {
+  urgent: 'bg-red-500', high: 'bg-orange-400', medium: 'bg-yellow-400', low: 'bg-gray-300',
+}
 
 // ─── CSV 다운로드 ─────────────────────────────────────────────────
 function downloadRecallCSV(
@@ -44,19 +34,12 @@ function downloadRecallCSV(
   const rows = items.map((item) => {
     const p = products.find((x) => x.id === item.productId)
     const s = stores.find((x) => x.id === item.storeId)
-    return [
-      s?.name ?? item.storeId,
-      p?.name ?? item.productId,
-      item.productId,
-      PRIORITY_KO[item.priority],
-      item.suggestedQty,
-      STATUS_KO[item.status],
-      item.reason,
-      new Date(item.createdAt).toLocaleDateString('ko-KR'),
-    ]
+    return [s?.name ?? item.storeId, p?.name ?? item.productId, item.productId,
+      PRIORITY_KO[item.priority], item.suggestedQty, STATUS_KO[item.status],
+      item.reason, new Date(item.createdAt).toLocaleDateString('ko-KR')]
   })
-  const escape = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
-  const csv = '\uFEFF' + [header, ...rows].map((r) => r.map(escape).join(',')).join('\n')
+  const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const csv = '\uFEFF' + [header, ...rows].map((r) => r.map(esc).join(',')).join('\n')
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -74,44 +57,55 @@ async function sendGoogleChatRecall(
   products: ReturnType<typeof useAppStore.getState>['products'],
   stores: ReturnType<typeof useAppStore.getState>['stores'],
 ) {
-  const PRIORITY_EMOJI: Record<RecallPriority, string> = { urgent: '🔴', high: '🟠', medium: '🟡', low: '⚪' }
+  const EM: Record<RecallPriority, string> = { urgent: '🔴', high: '🟠', medium: '🟡', low: '⚪' }
   const lines = items.map((item) => {
     const p = products.find((x) => x.id === item.productId)
     const s = stores.find((x) => x.id === item.storeId)
-    return `${PRIORITY_EMOJI[item.priority]} *${s?.name ?? item.storeId}* | ${p?.name ?? item.productId} | *${item.suggestedQty}개*`
+    return `${EM[item.priority]} *${s?.name ?? item.storeId}* | ${p?.name ?? item.productId} | *${item.suggestedQty}개*`
   })
   const now = new Date().toLocaleString('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   const text = `🚚 *OZKIZ 회수 요청 (${items.length}건)*\n📅 ${now}\n\n${lines.join('\n')}\n\n_회수 담당자는 각 매장 매니저에게 회수 요청을 진행해주세요._`
-  await fetch(webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
+  await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
+}
+
+// ─── 호버 툴팁 ───────────────────────────────────────────────────
+function Tooltip({ content, children }: { content: string; children: React.ReactNode }) {
+  if (!content) return <>{children}</>
+  return (
+    <div className="relative group/tt inline-block max-w-full">
+      {children}
+      <div className="pointer-events-none absolute bottom-full left-0 mb-2 hidden group-hover/tt:block z-50
+        w-64 px-3 py-2 bg-gray-900 text-white text-[11px] rounded-xl shadow-2xl leading-relaxed whitespace-normal">
+        {content}
+        <div className="absolute top-full left-5 w-0 h-0 border-l-[5px] border-r-[5px] border-t-[5px]
+          border-transparent border-t-gray-900" />
+      </div>
+    </div>
+  )
 }
 
 // ─── 메인 컴포넌트 ────────────────────────────────────────────────
 export default function Dashboard() {
-  const { recallItems, products, stores, settings, generateRecalls, updateRecallStatus } = useAppStore()
+  const { recallItems, products, stores, storeStocks, centerStocks, settings, generateRecalls, updateRecallStatus, getProduct, getStore } = useAppStore()
+
   const [search, setSearch] = useState('')
   const [filterPriority, setFilterPriority] = useState<RecallPriority | 'all'>('all')
   const [filterStatus, setFilterStatus] = useState<RecallStatus | 'all'>('all')
   const [filterStore, setFilterStore] = useState('all')
-  const [sortKey, setSortKey] = useState<SortKey>('recallScore')
-  const [sortAsc, setSortAsc] = useState(false)
-  const [selectedItem, setSelectedItem] = useState<RecallItem | null>(null)
   const [showFilters, setShowFilters] = useState(false)
+  const [cardFilter, setCardFilter] = useState<'urgent' | 'transit' | 'completed' | null>(null)
 
-  // 다중 선택
+  const [selectedItem, setSelectedItem] = useState<RecallItem | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
 
-  // 일괄 요청 상태
   const [sending, setSending] = useState(false)
   const [sendResult, setSendResult] = useState<{ ok: boolean; msg: string } | null>(null)
 
-  // 무한 스크롤
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const sentinelRef = useRef<HTMLDivElement>(null)
 
+  // ── 통계 ──────────────────────────────────────────────────────
   const stats = useMemo(() => {
     const active = recallItems.filter((r) => r.status !== 'received' && r.status !== 'cancelled')
     return {
@@ -123,79 +117,104 @@ export default function Dashboard() {
     }
   }, [recallItems])
 
+  // ── 매장 목록 ─────────────────────────────────────────────────
   const storeList = useMemo(() => {
     const ids = [...new Set(recallItems.map((r) => r.storeId))]
     return ids.map((id) => ({ id, name: stores.find((s) => s.id === id)?.name ?? id }))
   }, [recallItems, stores])
 
+  // ── 필터 적용 ─────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = [...recallItems]
+    // 카드 필터
+    if (cardFilter === 'urgent') list = list.filter((r) => r.priority === 'urgent' && r.status !== 'received' && r.status !== 'cancelled')
+    else if (cardFilter === 'transit') list = list.filter((r) => r.status === 'in-transit')
+    else if (cardFilter === 'completed') list = list.filter((r) => r.status === 'received')
+    else list = list.filter((r) => r.status !== 'received' && r.status !== 'cancelled') // 기본: 활성
+
     if (search) {
       const q = search.toLowerCase()
       list = list.filter((r) => {
-        const p = products.find((p) => p.id === r.productId)
-        const s = stores.find((s) => s.id === r.storeId)
-        return (
-          r.productId.toLowerCase().includes(q) ||
-          p?.name.toLowerCase().includes(q) ||
-          s?.name.toLowerCase().includes(q)
-        )
+        const p = products.find((x) => x.id === r.productId)
+        const s = stores.find((x) => x.id === r.storeId)
+        return r.productId.toLowerCase().includes(q) || p?.name.toLowerCase().includes(q) || s?.name.toLowerCase().includes(q)
       })
     }
     if (filterPriority !== 'all') list = list.filter((r) => r.priority === filterPriority)
     if (filterStatus !== 'all') list = list.filter((r) => r.status === filterStatus)
     if (filterStore !== 'all') list = list.filter((r) => r.storeId === filterStore)
-    list.sort((a, b) => {
-      let diff = 0
-      if (sortKey === 'recallScore') diff = a.recallScore - b.recallScore
-      else if (sortKey === 'suggestedQty') diff = a.suggestedQty - b.suggestedQty
-      else if (sortKey === 'priority') diff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]
-      return sortAsc ? diff : -diff
-    })
     return list
-  }, [recallItems, search, filterPriority, filterStatus, filterStore, sortKey, sortAsc, products, stores])
+  }, [recallItems, search, filterPriority, filterStatus, filterStore, cardFilter, products, stores])
 
-  // 필터 변경 시 카운트 초기화
-  useEffect(() => {
-    setVisibleCount(PAGE_SIZE)
-    setSelectedIds(new Set())
-  }, [search, filterPriority, filterStatus, filterStore, sortKey, sortAsc])
+  // ── 상품별 그룹핑 (PKU 기준) ──────────────────────────────────
+  const productGroups = useMemo(() => {
+    const map = new Map<string, {
+      key: string; productName: string; imageUrl?: string
+      skuIds: string[]; recalls: RecallItem[]
+    }>()
+    for (const recall of filtered) {
+      const product = getProduct(recall.productId)
+      const key = product?.name ?? recall.productId
+      if (!map.has(key)) map.set(key, { key, productName: key, imageUrl: product?.imageUrl, skuIds: [], recalls: [] })
+      const g = map.get(key)!
+      if (!g.skuIds.includes(recall.productId)) g.skuIds.push(recall.productId)
+      g.recalls.push(recall)
+    }
+    return Array.from(map.values()).map((g) => {
+      const active = g.recalls.filter((r) => r.status !== 'received' && r.status !== 'cancelled')
+      const priorities = active.map((r) => PRIORITY_ORDER[r.priority])
+      const minP = priorities.length > 0 ? Math.min(...priorities) : 3
+      return {
+        ...g,
+        highestPriority: (['urgent', 'high', 'medium', 'low'] as RecallPriority[])[minP],
+        urgentCount: active.filter((r) => r.priority === 'urgent').length,
+        highCount: active.filter((r) => r.priority === 'high').length,
+        totalRecallQty: active.reduce((s, r) => s + r.suggestedQty, 0),
+        storeCount: new Set(active.map((r) => r.storeId)).size,
+        activeCount: active.length,
+      }
+    }).sort((a, b) =>
+      PRIORITY_ORDER[a.highestPriority] - PRIORITY_ORDER[b.highestPriority] ||
+      b.urgentCount - a.urgentCount || b.totalRecallQty - a.totalRecallQty
+    )
+  }, [filtered, getProduct])
 
-  // 무한 스크롤
+  // ── 무한 스크롤 ───────────────────────────────────────────────
+  useEffect(() => { setVisibleCount(PAGE_SIZE); setSelectedIds(new Set()) },
+    [search, filterPriority, filterStatus, filterStore, cardFilter])
+
   const loadMore = useCallback(() => {
-    setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, filtered.length))
-  }, [filtered.length])
+    setVisibleCount((p) => Math.min(p + PAGE_SIZE, productGroups.length))
+  }, [productGroups.length])
 
   useEffect(() => {
     const el = sentinelRef.current
     if (!el) return
-    const observer = new IntersectionObserver(
-      (entries) => { if (entries[0].isIntersecting) loadMore() },
-      { rootMargin: '200px' }
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
+    const ob = new IntersectionObserver((e) => { if (e[0].isIntersecting) loadMore() }, { rootMargin: '200px' })
+    ob.observe(el)
+    return () => ob.disconnect()
   }, [loadMore])
 
-  const visibleList = filtered.slice(0, visibleCount)
-  const hasMore = visibleCount < filtered.length
+  const visibleGroups = productGroups.slice(0, visibleCount)
+  const hasMore = visibleCount < productGroups.length
 
-  // 회수권장 상태인 선택 항목
-  const selectedRecommended = filtered.filter(
-    (r) => selectedIds.has(r.id) && r.status === 'recommended'
-  )
+  // ── 선택 관련 ─────────────────────────────────────────────────
+  const selectedRecommended = filtered.filter((r) => selectedIds.has(r.id) && r.status === 'recommended')
 
-  function toggleSort(key: SortKey) {
-    if (sortKey === key) setSortAsc(!sortAsc)
-    else { setSortKey(key); setSortAsc(false) }
+  function toggleGroupSelect(groupKey: string) {
+    const group = productGroups.find((g) => g.key === groupKey)
+    if (!group) return
+    const ids = group.recalls.map((r) => r.id)
+    const allSelected = ids.every((id) => selectedIds.has(id))
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      ids.forEach((id) => allSelected ? next.delete(id) : next.add(id))
+      return next
+    })
   }
 
   function toggleSelect(id: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
+    setSelectedIds((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
   }
 
   function toggleSelectAll() {
@@ -204,15 +223,22 @@ export default function Dashboard() {
     setSelectedIds(allSelected ? new Set() : allIds)
   }
 
+  function toggleGroup(key: string) {
+    setExpandedGroups((prev) => { const next = new Set(prev); next.has(key) ? next.delete(key) : next.add(key); return next })
+  }
+
+  // ── 카드 필터 토글 ────────────────────────────────────────────
+  function toggleCardFilter(f: 'urgent' | 'transit' | 'completed') {
+    setCardFilter((prev) => prev === f ? null : f)
+    setFilterPriority('all'); setFilterStatus('all')
+  }
+
+  // ── 일괄 요청 ─────────────────────────────────────────────────
   async function handleBulkRequest() {
     if (selectedRecommended.length === 0) return
-    setSending(true)
-    setSendResult(null)
+    setSending(true); setSendResult(null)
     try {
-      // 상태를 '요청됨'으로 변경
       selectedRecommended.forEach((item) => updateRecallStatus(item.id, 'requested'))
-
-      // Google Chat 전송
       const webhookUrl = settings.googleChatWebhookUrl?.trim()
       if (webhookUrl) {
         await sendGoogleChatRecall(webhookUrl, selectedRecommended, products, stores)
@@ -233,74 +259,60 @@ export default function Dashboard() {
 
   return (
     <div className="p-4 lg:p-6 space-y-4 max-w-7xl mx-auto">
-      {/* 데이터 현황 패널 */}
       <DataStatusPanel />
 
-      {/* 통계 카드 */}
+      {/* 통계 카드 (클릭 필터) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="회수 대상" value={formatNumber(stats.total)} sub={`총 ${formatNumber(stats.totalSuggestedQty)}개`} icon={Package} accent="orange" />
-        <StatCard label="긴급 회수" value={formatNumber(stats.urgent)} sub="즉시 처리 필요" icon={AlertTriangle} accent="red" />
-        <StatCard label="이송 중" value={formatNumber(stats.inTransit)} sub="진행 중" icon={TrendingUp} accent="amber" />
-        <StatCard label="입고 완료" value={formatNumber(stats.completed)} sub="이번 시즌 누계" icon={CheckCircle} accent="green" />
+        <StatCard label="회수 대상" value={formatNumber(stats.total)} sub={`총 ${formatNumber(stats.totalSuggestedQty)}개`}
+          icon={Package} accent="orange"
+          active={cardFilter === null}
+          onClick={() => setCardFilter(null)} />
+        <StatCard label="긴급 회수" value={formatNumber(stats.urgent)} sub="즉시 처리 필요"
+          icon={AlertTriangle} accent="red"
+          active={cardFilter === 'urgent'}
+          onClick={() => toggleCardFilter('urgent')} />
+        <StatCard label="이송 중" value={formatNumber(stats.inTransit)} sub="진행 중"
+          icon={TrendingUp} accent="amber"
+          active={cardFilter === 'transit'}
+          onClick={() => toggleCardFilter('transit')} />
+        <StatCard label="입고 완료" value={formatNumber(stats.completed)} sub="이번 시즌 누계"
+          icon={CheckCircle} accent="green"
+          active={cardFilter === 'completed'}
+          onClick={() => toggleCardFilter('completed')} />
       </div>
 
       {/* 알림 결과 토스트 */}
       {sendResult && (
-        <div className={cn(
-          'flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium border',
-          sendResult.ok
-            ? 'bg-green-50 text-green-700 border-green-100'
-            : 'bg-red-50 text-red-600 border-red-100'
-        )}>
-          {sendResult.ok
-            ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-            : <AlertCircle className="w-4 h-4 flex-shrink-0" />}
+        <div className={cn('flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium border',
+          sendResult.ok ? 'bg-green-50 text-green-700 border-green-100' : 'bg-red-50 text-red-600 border-red-100')}>
+          {sendResult.ok ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 flex-shrink-0" />}
           {sendResult.msg}
         </div>
       )}
 
-      {/* 빈 상태 */}
       {!hasData && <EmptyState onGenerate={generateRecalls} />}
 
-      {/* 회수 목록 */}
       {hasData && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
           {/* 툴바 */}
           <div className="px-4 py-3 border-b border-gray-100 flex flex-col sm:flex-row gap-2.5">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+              <input value={search} onChange={(e) => setSearch(e.target.value)}
                 placeholder="상품코드, 상품명, 매장명..."
-                className="w-full pl-8 pr-3 h-8 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:bg-white transition-colors"
-              />
+                className="w-full pl-8 pr-3 h-8 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:bg-white transition-colors" />
             </div>
-            <button
-              onClick={() => setShowFilters(!showFilters)}
-              className={cn(
-                'flex items-center gap-1.5 px-3 h-8 text-xs font-medium rounded-lg border transition-colors',
-                showFilters
-                  ? 'border-brand-300 bg-brand-50 text-brand-700'
-                  : 'border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-              )}
-            >
-              <Filter className="w-3.5 h-3.5" />
-              필터
+            <button onClick={() => setShowFilters(!showFilters)}
+              className={cn('flex items-center gap-1.5 px-3 h-8 text-xs font-medium rounded-lg border transition-colors',
+                showFilters ? 'border-brand-300 bg-brand-50 text-brand-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50')}>
+              <Filter className="w-3.5 h-3.5" />필터
               <ChevronDown className={cn('w-3 h-3 transition-transform', showFilters && 'rotate-180')} />
             </button>
-            {/* 다운로드 버튼 */}
-            <button
-              onClick={() => downloadRecallCSV(filtered, products, stores)}
-              className="flex items-center gap-1.5 px-3 h-8 text-xs font-medium rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-800 transition-colors"
-              title="현재 목록 엑셀 다운로드"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">다운로드</span>
+            <button onClick={() => downloadRecallCSV(filtered, products, stores)}
+              className="flex items-center gap-1.5 px-3 h-8 text-xs font-medium rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors">
+              <Download className="w-3.5 h-3.5" /><span className="hidden sm:inline">다운로드</span>
             </button>
-            <div className="hidden sm:flex items-center text-xs text-gray-400 px-1">
-              {filtered.length}건
-            </div>
+            <div className="hidden sm:flex items-center text-xs text-gray-400 px-1">{productGroups.length}개 상품</div>
           </div>
 
           {/* 필터 패널 */}
@@ -309,67 +321,45 @@ export default function Dashboard() {
               <select value={filterPriority} onChange={(e) => setFilterPriority(e.target.value as RecallPriority | 'all')}
                 className="text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-brand-300">
                 <option value="all">전체 우선순위</option>
-                <option value="urgent">긴급</option>
-                <option value="high">높음</option>
-                <option value="medium">보통</option>
-                <option value="low">낮음</option>
+                <option value="urgent">긴급</option><option value="high">높음</option>
+                <option value="medium">보통</option><option value="low">낮음</option>
               </select>
               <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as RecallStatus | 'all')}
                 className="text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-brand-300">
                 <option value="all">전체 상태</option>
-                <option value="recommended">회수 권장</option>
-                <option value="requested">요청됨</option>
-                <option value="in-transit">이송 중</option>
-                <option value="received">입고 완료</option>
+                <option value="recommended">회수 권장</option><option value="requested">요청됨</option>
+                <option value="in-transit">이송 중</option><option value="received">입고 완료</option>
               </select>
               <select value={filterStore} onChange={(e) => setFilterStore(e.target.value)}
                 className="text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-brand-300">
                 <option value="all">전체 매장</option>
                 {storeList.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
-              <span className="text-xs text-gray-400 sm:hidden">{filtered.length}건</span>
             </div>
           )}
 
-          {/* 일괄 액션 바 (선택 시 나타남) */}
+          {/* 일괄 액션 바 */}
           {selectedIds.size > 0 && (
             <div className="px-4 py-2.5 bg-brand-50 border-b border-brand-100 flex flex-wrap items-center gap-3">
+              <button onClick={toggleSelectAll} className="text-gray-400 hover:text-brand-500 transition-colors">
+                {filtered.every((r) => selectedIds.has(r.id))
+                  ? <CheckSquare className="w-4 h-4 text-brand-500" />
+                  : <Square className="w-4 h-4" />}
+              </button>
               <span className="text-sm font-semibold text-brand-700">
                 {selectedIds.size}건 선택됨
-                {selectedRecommended.length > 0 && (
-                  <span className="ml-1.5 text-xs font-normal text-brand-500">
-                    (회수권장 {selectedRecommended.length}건)
-                  </span>
-                )}
+                {selectedRecommended.length > 0 && <span className="ml-1.5 text-xs font-normal text-brand-500">(회수권장 {selectedRecommended.length}건)</span>}
               </span>
-              <button
-                onClick={() => setSelectedIds(new Set())}
-                className="text-xs text-brand-500 hover:text-brand-700 underline"
-              >
-                선택 해제
-              </button>
+              <button onClick={() => setSelectedIds(new Set())} className="text-xs text-brand-500 hover:text-brand-700 underline">선택 해제</button>
               <div className="flex items-center gap-2 ml-auto">
-                {/* 선택 항목만 다운로드 */}
-                <button
-                  onClick={() => downloadRecallCSV(
-                    filtered.filter((r) => selectedIds.has(r.id)),
-                    products, stores, '선택회수목록'
-                  )}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-white transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  엑셀 다운로드
+                <button onClick={() => downloadRecallCSV(filtered.filter((r) => selectedIds.has(r.id)), products, stores, '선택회수목록')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-white transition-colors">
+                  <Download className="w-3.5 h-3.5" />엑셀 다운로드
                 </button>
-                {/* Google Chat + 상태 변경 */}
                 {selectedRecommended.length > 0 && (
-                  <button
-                    onClick={handleBulkRequest}
-                    disabled={sending}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-brand-500 hover:bg-brand-600 text-white rounded-lg transition-colors disabled:opacity-60"
-                  >
-                    {sending
-                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      : <Send className="w-3.5 h-3.5" />}
+                  <button onClick={handleBulkRequest} disabled={sending}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-brand-500 hover:bg-brand-600 text-white rounded-lg transition-colors disabled:opacity-60">
+                    {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                     회수 요청 발송 ({selectedRecommended.length}건)
                   </button>
                 )}
@@ -377,82 +367,363 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* 테이블 */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 bg-gray-50/60">
-                  {/* 전체선택 체크박스 */}
-                  <th className="w-10 px-3 py-2.5 text-center">
-                    <button
-                      onClick={toggleSelectAll}
-                      className="text-gray-400 hover:text-brand-500 transition-colors"
-                      title={filtered.every((r) => selectedIds.has(r.id)) ? '전체 해제' : '전체 선택'}
-                    >
-                      {filtered.length > 0 && filtered.every((r) => selectedIds.has(r.id))
-                        ? <CheckSquare className="w-4 h-4 text-brand-500" />
-                        : <Square className="w-4 h-4" />}
-                    </button>
-                  </th>
-                  <th className="w-1 p-0" />
-                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">상품</th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">매장</th>
-                  <SortTh label="우선순위" sortKey="priority" current={sortKey} asc={sortAsc} onToggle={toggleSort} />
-                  <SortTh label="점수" sortKey="recallScore" current={sortKey} asc={sortAsc} onToggle={toggleSort} />
-                  <SortTh label="권장수량" sortKey="suggestedQty" current={sortKey} asc={sortAsc} onToggle={toggleSort} />
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">상태</th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">회수 사유</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">액션</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="text-center py-14 text-gray-400 text-sm">
-                      조건에 맞는 항목이 없습니다
-                    </td>
-                  </tr>
-                ) : (
-                  visibleList.map((item) => (
-                    <RecallRow
-                      key={item.id}
-                      item={item}
-                      checked={selectedIds.has(item.id)}
-                      onCheck={() => toggleSelect(item.id)}
-                      onAction={() => setSelectedItem(item)}
-                    />
-                  ))
-                )}
-              </tbody>
-            </table>
+          {/* 상품 목록 헤더 */}
+          <div className="px-4 py-2 bg-gray-50/60 border-b border-gray-100 flex items-center gap-3">
+            <button onClick={toggleSelectAll} className="text-gray-300 hover:text-brand-500 transition-colors flex-shrink-0">
+              {filtered.length > 0 && filtered.every((r) => selectedIds.has(r.id))
+                ? <CheckSquare className="w-4 h-4 text-brand-500" />
+                : <Square className="w-4 h-4" />}
+            </button>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex-1">상품 (PKU)</span>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide w-20 text-center hidden sm:block">우선순위</span>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide w-16 text-right hidden sm:block">회수수량</span>
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide w-14 text-right hidden md:block">매장수</span>
+            <span className="w-6" />
           </div>
 
-          {/* 무한 스크롤 sentinel */}
-          <div ref={sentinelRef} className="h-2" />
-          {hasMore && (
-            <div className="flex items-center justify-center py-4 gap-2 text-sm text-gray-400 border-t border-gray-50">
-              <svg className="w-4 h-4 animate-spin text-brand-400" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
-              </svg>
-              불러오는 중… ({visibleCount}/{filtered.length})
-            </div>
-          )}
-          {!hasMore && filtered.length > PAGE_SIZE && (
-            <div className="text-center py-3 text-xs text-gray-300 border-t border-gray-50">
-              전체 {filtered.length}건 표시 완료
+          {/* 상품 그룹 목록 */}
+          {productGroups.length === 0 ? (
+            <div className="py-14 text-center text-gray-400 text-sm">조건에 맞는 항목이 없습니다</div>
+          ) : (
+            <div>
+              {visibleGroups.map((group) => (
+                <ProductGroupRow
+                  key={group.key}
+                  group={group}
+                  expanded={expandedGroups.has(group.key)}
+                  onToggle={() => toggleGroup(group.key)}
+                  selectedIds={selectedIds}
+                  onGroupCheck={() => toggleGroupSelect(group.key)}
+                  onItemCheck={toggleSelect}
+                  onItemAction={setSelectedItem}
+                  onRevert={(id) => updateRecallStatus(id, 'in-transit')}
+                  storeStocks={storeStocks}
+                  centerStocks={centerStocks}
+                  getStore={getStore}
+                />
+              ))}
+
+              {/* 무한 스크롤 sentinel */}
+              <div ref={sentinelRef} className="h-2" />
+              {hasMore && (
+                <div className="flex items-center justify-center py-4 gap-2 text-sm text-gray-400 border-t border-gray-50">
+                  <svg className="w-4 h-4 animate-spin text-brand-400" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                  </svg>
+                  불러오는 중… ({visibleCount}/{productGroups.length})
+                </div>
+              )}
+              {!hasMore && productGroups.length > PAGE_SIZE && (
+                <div className="text-center py-3 text-xs text-gray-300 border-t border-gray-50">
+                  전체 {productGroups.length}개 상품 표시 완료
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
 
-      {/* 회수 모달 */}
-      {selectedItem && (
-        <StoreRecallModal item={selectedItem} onClose={() => setSelectedItem(null)} />
+      {selectedItem && <StoreRecallModal item={selectedItem} onClose={() => setSelectedItem(null)} />}
+    </div>
+  )
+}
+
+// ─── 상품 그룹 행 ─────────────────────────────────────────────────
+function ProductGroupRow({
+  group, expanded, onToggle, selectedIds, onGroupCheck, onItemCheck, onItemAction, onRevert, storeStocks, centerStocks, getStore,
+}: {
+  group: ReturnType<typeof buildGroup>
+  expanded: boolean
+  onToggle: () => void
+  selectedIds: Set<string>
+  onGroupCheck: () => void
+  onItemCheck: (id: string) => void
+  onItemAction: (item: RecallItem) => void
+  onRevert: (id: string) => void
+  storeStocks: ReturnType<typeof useAppStore.getState>['storeStocks']
+  centerStocks: ReturnType<typeof useAppStore.getState>['centerStocks']
+  getStore: ReturnType<typeof useAppStore.getState>['getStore']
+}) {
+  const groupIds = group.recalls.map((r) => r.id)
+  const allSelected = groupIds.length > 0 && groupIds.every((id) => selectedIds.has(id))
+  const someSelected = groupIds.some((id) => selectedIds.has(id))
+
+  return (
+    <div className={cn('border-b border-gray-50 last:border-0', expanded && 'bg-orange-50/20')}>
+      {/* 상품 헤더 행 */}
+      <div className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50/60 transition-colors">
+        {/* 체크박스 */}
+        <button onClick={onGroupCheck} className="flex-shrink-0 text-gray-300 hover:text-brand-500 transition-colors">
+          {allSelected
+            ? <CheckSquare className="w-4 h-4 text-brand-500" />
+            : someSelected
+            ? <div className="w-4 h-4 rounded border-2 border-brand-400 bg-brand-100 flex items-center justify-center">
+                <div className="w-2 h-0.5 bg-brand-500" />
+              </div>
+            : <Square className="w-4 h-4" />}
+        </button>
+
+        {/* 이미지 */}
+        {group.imageUrl ? (
+          <img src={group.imageUrl} alt="" className="w-10 h-10 rounded-xl object-cover flex-shrink-0 bg-gray-100"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+        ) : (
+          <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0">
+            <Package className="w-4 h-4 text-gray-400" />
+          </div>
+        )}
+
+        {/* 상품명 + SKU 수 */}
+        <div className="flex-1 min-w-0" onClick={onToggle} role="button">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-semibold text-gray-900 truncate">{group.productName}</span>
+            <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{group.skuIds.length}종 SKU</span>
+            {group.urgentCount > 0 && (
+              <span className="flex items-center gap-1 text-[10px] font-bold bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">
+                <AlertTriangle className="w-2.5 h-2.5" />긴급 {group.urgentCount}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 mt-0.5">
+            <span className={cn('w-1.5 h-1.5 rounded-full inline-block', PRIORITY_DOT[group.highestPriority])} />
+            <span className="text-[11px] text-gray-400">{group.activeCount}건 회수대상</span>
+          </div>
+        </div>
+
+        {/* 통계 (데스크탑) */}
+        <div className="hidden sm:flex items-center gap-5 flex-shrink-0" onClick={onToggle} role="button">
+          <div className="text-center w-20">
+            <PriorityBadge priority={group.highestPriority} />
+          </div>
+          <div className="text-right w-16">
+            <div className="text-sm font-bold text-brand-600 tabular-nums">{formatNumber(group.totalRecallQty)}개</div>
+            <div className="text-[10px] text-gray-400">회수 수량</div>
+          </div>
+          <div className="text-right w-14 hidden md:block">
+            <div className="text-sm font-bold text-gray-700 tabular-nums">{group.storeCount}</div>
+            <div className="text-[10px] text-gray-400">매장</div>
+          </div>
+        </div>
+
+        {/* 펼치기 버튼 */}
+        <button onClick={onToggle} className="flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors p-1">
+          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {/* 펼친 내용: SKU별 상세 */}
+      {expanded && (
+        <div className="border-t border-orange-100/60">
+          {group.skuIds.map((skuId) => (
+            <SkuSection
+              key={skuId}
+              skuId={skuId}
+              recalls={group.recalls.filter((r) => r.productId === skuId)}
+              storeStocks={storeStocks}
+              centerStocks={centerStocks}
+              selectedIds={selectedIds}
+              onItemCheck={onItemCheck}
+              onItemAction={onItemAction}
+              onRevert={onRevert}
+              getStore={getStore}
+            />
+          ))}
+        </div>
       )}
     </div>
   )
 }
+
+// ─── SKU 섹션 ─────────────────────────────────────────────────────
+function SkuSection({
+  skuId, recalls, storeStocks, centerStocks, selectedIds, onItemCheck, onItemAction, onRevert, getStore,
+}: {
+  skuId: string
+  recalls: RecallItem[]
+  storeStocks: ReturnType<typeof useAppStore.getState>['storeStocks']
+  centerStocks: ReturnType<typeof useAppStore.getState>['centerStocks']
+  selectedIds: Set<string>
+  onItemCheck: (id: string) => void
+  onItemAction: (item: RecallItem) => void
+  onRevert: (id: string) => void
+  getStore: ReturnType<typeof useAppStore.getState>['getStore']
+}) {
+  const { getProduct, updateRecallStatus } = useAppStore()
+  const product = getProduct(skuId)
+  const centerQty = centerStocks.find((c) => c.productId === skuId)?.qty ?? 0
+
+  // 재고 있는 매장 + 회수 대상 매장 모두 포함
+  const skuStoreStocks = storeStocks.filter((s) => s.productId === skuId && s.qty > 0)
+  const recallStoreIds = new Set(recalls.map((r) => r.storeId))
+  const allStoreIds = [...new Set([...skuStoreStocks.map((s) => s.storeId), ...recalls.map((r) => r.storeId)])]
+
+  // 회수 대상 매장 먼저, 그다음 재고 많은 순
+  const sortedStoreIds = allStoreIds.sort((a, b) => {
+    const aRecall = recalls.find((r) => r.storeId === a)
+    const bRecall = recalls.find((r) => r.storeId === b)
+    if (aRecall && !bRecall) return -1
+    if (!aRecall && bRecall) return 1
+    if (aRecall && bRecall) return PRIORITY_ORDER[aRecall.priority] - PRIORITY_ORDER[bRecall.priority]
+    const aQty = skuStoreStocks.find((s) => s.storeId === a)?.qty ?? 0
+    const bQty = skuStoreStocks.find((s) => s.storeId === b)?.qty ?? 0
+    return bQty - aQty
+  })
+
+  return (
+    <div className="ml-14 mr-4 my-2 rounded-xl border border-gray-100 overflow-hidden">
+      {/* SKU 헤더 */}
+      <div className="flex items-center gap-3 px-3 py-2 bg-gray-50/80 border-b border-gray-100">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-600">
+          <Package className="w-3.5 h-3.5 text-gray-400" />
+          <span className="font-mono">{skuId}</span>
+          {(product?.color || product?.size) && (
+            <span className="text-gray-400 font-normal">· {[product.color, product.size].filter(Boolean).join(' / ')}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-1 ml-auto">
+          <Warehouse className="w-3 h-3 text-gray-400" />
+          <span className="text-xs text-gray-500">센터재고</span>
+          <span className={cn('text-xs font-bold ml-1', centerQty === 0 ? 'text-red-500' : 'text-gray-800')}>
+            {formatNumber(centerQty)}개
+          </span>
+        </div>
+      </div>
+
+      {/* 매장별 행 테이블 */}
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-white border-b border-gray-50">
+            <th className="w-8 px-2 py-1.5" />
+            <th className="text-left px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">
+              <div className="flex items-center gap-1"><Store className="w-3 h-3" /> 매장</div>
+            </th>
+            <th className="text-right px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">매장재고</th>
+            <th className="text-right px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">회수수량</th>
+            <th className="px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">상태</th>
+            <th className="px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">사유</th>
+            <th className="text-right px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">액션</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sortedStoreIds.map((storeId) => {
+            const recall = recalls.find((r) => r.storeId === storeId)
+            const storeQty = storeStocks.find((s) => s.productId === skuId && s.storeId === storeId)?.qty ?? 0
+            const store = getStore(storeId)
+            const checked = recall ? selectedIds.has(recall.id) : false
+
+            return (
+              <tr key={storeId} className={cn(
+                'border-b border-gray-50 last:border-0 transition-colors',
+                checked ? 'bg-brand-50/40' : recall ? 'hover:bg-orange-50/30' : 'hover:bg-gray-50/30'
+              )}>
+                {/* 체크박스 */}
+                <td className="w-8 px-2 py-2.5 text-center">
+                  {recall && (
+                    <button onClick={() => onItemCheck(recall.id)} className="text-gray-300 hover:text-brand-500 transition-colors">
+                      {checked ? <CheckSquare className="w-3.5 h-3.5 text-brand-500" /> : <Square className="w-3.5 h-3.5" />}
+                    </button>
+                  )}
+                </td>
+
+                {/* 매장명 */}
+                <td className="px-3 py-2.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0',
+                      recall ? PRIORITY_DOT[recall.priority] : 'bg-gray-200')} />
+                    <span className="text-sm text-gray-700">{store?.name ?? storeId}</span>
+                  </div>
+                </td>
+
+                {/* 매장 재고 */}
+                <td className="px-3 py-2.5 text-right">
+                  <span className="text-sm font-semibold tabular-nums text-gray-800">{formatNumber(storeQty)}개</span>
+                </td>
+
+                {/* 회수 수량 */}
+                <td className="px-3 py-2.5 text-right">
+                  {recall ? (
+                    <span className="text-sm font-bold text-brand-600 tabular-nums">→ {formatNumber(recall.suggestedQty)}개</span>
+                  ) : (
+                    <span className="text-xs text-gray-300">—</span>
+                  )}
+                </td>
+
+                {/* 상태 */}
+                <td className="px-3 py-2.5">
+                  {recall ? (
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <PriorityBadge priority={recall.priority} />
+                      <StatusBadge status={recall.status} />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-[11px] text-gray-400">
+                      <CheckCircle2 className="w-3 h-3 text-green-400" />회수불필요
+                    </div>
+                  )}
+                </td>
+
+                {/* 사유 (호버 툴팁) */}
+                <td className="px-3 py-2.5 max-w-[160px]">
+                  {recall?.reason ? (
+                    <Tooltip content={recall.reason}>
+                      <span className="text-[11px] text-gray-400 truncate block cursor-help max-w-[140px]">
+                        {recall.reason}
+                      </span>
+                    </Tooltip>
+                  ) : null}
+                </td>
+
+                {/* 액션 */}
+                <td className="px-3 py-2.5 text-right">
+                  <div className="flex items-center justify-end gap-1.5">
+                    {recall?.status === 'recommended' && (
+                      <button onClick={() => onItemAction(recall)}
+                        className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                        회수 요청
+                      </button>
+                    )}
+                    {recall?.status === 'requested' && (
+                      <button onClick={() => updateRecallStatus(recall.id, 'in-transit')}
+                        className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                        이송 처리
+                      </button>
+                    )}
+                    {recall?.status === 'in-transit' && (
+                      <button onClick={() => updateRecallStatus(recall.id, 'received', recall.requestedQty)}
+                        className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                        입고 확인
+                      </button>
+                    )}
+                    {recall?.status === 'received' && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-green-600 font-medium">완료</span>
+                        <button
+                          onClick={() => onRevert(recall.id)}
+                          title="입고완료 취소 → 이송중으로 원복"
+                          className="flex items-center gap-0.5 px-2 py-1 text-[10px] font-medium text-gray-500 hover:text-orange-600 bg-gray-100 hover:bg-orange-50 border border-gray-200 hover:border-orange-200 rounded-md transition-colors"
+                        >
+                          <Undo2 className="w-2.5 h-2.5" />원복
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// helper for type inference
+const buildGroup = (g: {
+  key: string; productName: string; imageUrl?: string; skuIds: string[]; recalls: RecallItem[]
+  highestPriority: RecallPriority; urgentCount: number; highCount: number
+  totalRecallQty: number; storeCount: number; activeCount: number
+}) => g
 
 // ─── 데이터 현황 패널 ────────────────────────────────────────────
 function DataStatusPanel() {
@@ -460,8 +731,8 @@ function DataStatusPanel() {
   const hasCenter = centerStocks.length > 0
   const hasStore = storeStocks.length > 0
   const onlineSales = periodSales.filter((p) => p.channel === 'online')
-  const offlineSales = periodSales.filter((p) => p.channel === 'offline')
   const coupangSales = periodSales.filter((p) => p.channel === 'coupang')
+  const offlineSales = periodSales.filter((p) => p.channel === 'offline')
   const hasOnline = onlineSales.length > 0
   const hasCoupang = coupangSales.length > 0
   const hasOffline = offlineSales.length > 0
@@ -474,36 +745,27 @@ function DataStatusPanel() {
     { label: '쿠팡', ok: hasCoupang, detail: hasCoupang ? `${coupangSales.length}건` : null, required: false },
     { label: '매장판매', ok: hasOffline, detail: hasOffline ? `${offlineSales.length}건` : null, required: false },
   ]
-
-  const missingRequired = items.filter((i) => i.required && !i.ok)
-  const allOk = missingRequired.length === 0
+  const allOk = items.filter((i) => i.required).every((i) => i.ok)
 
   return (
-    <div className={cn(
-      'rounded-2xl border px-4 py-3',
-      allOk ? 'bg-white border-gray-100'
-        : !hasAnySales && (hasCenter || hasStore) ? 'bg-amber-50 border-amber-100'
-        : 'bg-white border-gray-100'
-    )}>
+    <div className={cn('rounded-2xl border px-4 py-3',
+      allOk ? 'bg-white border-gray-100' : !hasAnySales && (hasCenter || hasStore) ? 'bg-amber-50 border-amber-100' : 'bg-white border-gray-100')}>
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-1.5 mr-1">
           <Layers className="w-3.5 h-3.5 text-gray-400" />
           <span className="text-xs font-semibold text-gray-500">데이터 현황</span>
         </div>
         {items.map((item) => (
-          <div key={item.label} className={cn(
-            'flex items-center gap-1 text-[11px] px-2 py-1 rounded-full font-medium border',
+          <div key={item.label} className={cn('flex items-center gap-1 text-[11px] px-2 py-1 rounded-full font-medium border',
             item.ok ? 'bg-green-50 text-green-700 border-green-100'
               : item.required ? 'bg-red-50 text-red-500 border-red-100'
-              : 'bg-gray-50 text-gray-400 border-gray-100'
-          )}>
+              : 'bg-gray-50 text-gray-400 border-gray-100')}>
             {item.ok ? <CheckCircle2 className="w-3 h-3 flex-shrink-0" /> : <XCircle className="w-3 h-3 flex-shrink-0" />}
-            {item.label}
-            {item.detail && <span className="opacity-60">· {item.detail}</span>}
+            {item.label}{item.detail && <span className="opacity-60">· {item.detail}</span>}
           </div>
         ))}
         {!allOk && (
-          <Link to="/upload" className="ml-auto text-[11px] font-semibold text-brand-600 hover:text-brand-700 hover:underline whitespace-nowrap">
+          <Link to="/upload" className="ml-auto text-[11px] font-semibold text-brand-600 hover:underline whitespace-nowrap">
             업로드하기 →
           </Link>
         )}
@@ -511,203 +773,48 @@ function DataStatusPanel() {
       {!hasAnySales && (hasCenter || hasStore) && (
         <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-700">
           <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-          <span>
-            <strong>온라인 판매 데이터가 없으면 분석 결과가 0건</strong>이 됩니다 —
-            이지어드민 어드민상품매출통계를 업로드하세요
-          </span>
+          <strong>온라인 판매 데이터가 없으면 분석 결과가 0건</strong>이 됩니다 — 이지어드민 어드민상품매출통계를 업로드하세요
         </div>
       )}
     </div>
   )
 }
 
-// ─── 통계 카드 ────────────────────────────────────────────────────
+// ─── 통계 카드 (클릭 가능) ────────────────────────────────────────
 type AccentColor = 'orange' | 'red' | 'amber' | 'green'
-const ACCENT: Record<AccentColor, { icon: string; top: string; val: string }> = {
-  orange: { icon: 'bg-orange-50 text-orange-500', top: 'bg-orange-500', val: 'text-orange-600' },
-  red:    { icon: 'bg-red-50 text-red-500',       top: 'bg-red-500',    val: 'text-red-600' },
-  amber:  { icon: 'bg-amber-50 text-amber-500',   top: 'bg-amber-400',  val: 'text-amber-600' },
-  green:  { icon: 'bg-green-50 text-green-500',   top: 'bg-green-500',  val: 'text-green-600' },
+const ACCENT: Record<AccentColor, { icon: string; top: string; val: string; ring: string }> = {
+  orange: { icon: 'bg-orange-50 text-orange-500', top: 'bg-orange-500', val: 'text-orange-600', ring: 'ring-orange-300' },
+  red:    { icon: 'bg-red-50 text-red-500',       top: 'bg-red-500',    val: 'text-red-600',    ring: 'ring-red-300' },
+  amber:  { icon: 'bg-amber-50 text-amber-500',   top: 'bg-amber-400',  val: 'text-amber-600',  ring: 'ring-amber-300' },
+  green:  { icon: 'bg-green-50 text-green-500',   top: 'bg-green-500',  val: 'text-green-600',  ring: 'ring-green-300' },
 }
 
-function StatCard({ label, value, sub, icon: Icon, accent }: {
-  label: string; value: string | number; sub?: string; icon: React.ElementType; accent: AccentColor
+function StatCard({ label, value, sub, icon: Icon, accent, active, onClick }: {
+  label: string; value: string | number; sub?: string; icon: React.ElementType
+  accent: AccentColor; active?: boolean; onClick?: () => void
 }) {
   const c = ACCENT[accent]
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+    <button
+      onClick={onClick}
+      className={cn(
+        'bg-white rounded-2xl border shadow-sm overflow-hidden text-left w-full transition-all',
+        active ? `border-gray-200 ring-2 ${c.ring} scale-[1.02]` : 'border-gray-100 hover:border-gray-200 hover:shadow-md'
+      )}
+    >
       <div className={cn('h-1', c.top)} />
       <div className="p-4">
         <div className="flex items-center justify-between mb-3">
           <div className={cn('w-8 h-8 rounded-xl flex items-center justify-center', c.icon)}>
             <Icon className="w-4 h-4" />
           </div>
+          {active && <span className="text-[10px] text-gray-400 font-medium">필터 중</span>}
         </div>
         <div className={cn('text-2xl font-bold tabular-nums', c.val)}>{value}</div>
         <div className="text-xs font-medium text-gray-600 mt-0.5">{label}</div>
         {sub && <div className="text-[11px] text-gray-400 mt-0.5">{sub}</div>}
       </div>
-    </div>
-  )
-}
-
-// ─── 테이블 헤더 ─────────────────────────────────────────────────
-function SortTh({ label, sortKey, current, asc, onToggle }: {
-  label: string; sortKey: SortKey; current: SortKey; asc: boolean; onToggle: (k: SortKey) => void
-}) {
-  return (
-    <th
-      className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
-      onClick={() => onToggle(sortKey)}
-    >
-      <div className="flex items-center gap-1">
-        {label}
-        <ArrowUpDown className={cn('w-3 h-3', current === sortKey ? 'text-brand-500' : 'text-gray-300')} />
-      </div>
-    </th>
-  )
-}
-
-// ─── 회수 행 ─────────────────────────────────────────────────────
-const PRIORITY_BORDER: Record<RecallPriority, string> = {
-  urgent: 'bg-red-500', high: 'bg-orange-400', medium: 'bg-yellow-400', low: 'bg-gray-200',
-}
-
-function RecallRow({
-  item, checked, onCheck, onAction,
-}: {
-  item: RecallItem
-  checked: boolean
-  onCheck: () => void
-  onAction: () => void
-}) {
-  const { getProduct, getStore, updateRecallStatus, updateRecallItem } = useAppStore()
-  const product = getProduct(item.productId)
-  const store = getStore(item.storeId)
-  const [editingQty, setEditingQty] = useState(false)
-  const [qtyInput, setQtyInput] = useState(String(item.suggestedQty))
-
-  function commitQty() {
-    const v = parseInt(qtyInput, 10)
-    if (!isNaN(v) && v >= 0) updateRecallItem(item.id, { suggestedQty: v })
-    else setQtyInput(String(item.suggestedQty))
-    setEditingQty(false)
-  }
-
-  return (
-    <tr className={cn(
-      'border-b border-gray-50 last:border-0 transition-colors',
-      checked ? 'bg-brand-50/40' : 'hover:bg-slate-50/60'
-    )}>
-      {/* 체크박스 */}
-      <td className="w-10 px-3 py-3 text-center">
-        <button onClick={onCheck} className="text-gray-300 hover:text-brand-500 transition-colors">
-          {checked
-            ? <CheckSquare className="w-4 h-4 text-brand-500" />
-            : <Square className="w-4 h-4" />}
-        </button>
-      </td>
-
-      {/* 우선순위 컬러 바 */}
-      <td className="w-1 p-0">
-        <div className={cn('w-[3px] min-h-[52px] h-full', PRIORITY_BORDER[item.priority])} />
-      </td>
-
-      {/* 상품 */}
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-3">
-          {product?.imageUrl ? (
-            <img src={product.imageUrl} alt="" className="w-9 h-9 rounded-lg object-cover flex-shrink-0 bg-gray-100"
-              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
-          ) : (
-            <div className="w-9 h-9 rounded-lg bg-gray-100 flex-shrink-0" />
-          )}
-          <div className="min-w-0">
-            <div className="font-medium text-gray-900 text-sm truncate max-w-[180px]">
-              {product?.name ?? item.productId}
-            </div>
-            <div className="text-[11px] text-gray-400 font-mono mt-0.5">{item.productId}</div>
-          </div>
-        </div>
-      </td>
-
-      {/* 매장 */}
-      <td className="px-3 py-3">
-        <span className="text-sm text-gray-600 whitespace-nowrap">{store?.name ?? item.storeId}</span>
-      </td>
-
-      {/* 우선순위 */}
-      <td className="px-3 py-3"><PriorityBadge priority={item.priority} /></td>
-
-      {/* 점수 */}
-      <td className="px-3 py-3 min-w-[110px]"><ScoreBar score={item.recallScore} /></td>
-
-      {/* 권장 수량 */}
-      <td className="px-3 py-3">
-        {editingQty ? (
-          <input
-            autoFocus type="number" min={0} value={qtyInput}
-            onChange={(e) => setQtyInput(e.target.value)}
-            onBlur={commitQty}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitQty()
-              if (e.key === 'Escape') { setQtyInput(String(item.suggestedQty)); setEditingQty(false) }
-            }}
-            className="w-16 text-center border border-brand-300 rounded-lg px-1 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-300"
-          />
-        ) : (
-          <div>
-            <button
-              onClick={() => { setQtyInput(String(item.suggestedQty)); setEditingQty(true) }}
-              className="text-sm font-bold text-gray-900 hover:text-brand-600 hover:underline tabular-nums transition-colors"
-              title="클릭하여 수정"
-            >
-              {formatNumber(item.suggestedQty)}개
-            </button>
-            {item.requestedQty !== undefined && (
-              <div className="text-[10px] text-gray-400 font-normal mt-0.5">요청 {item.requestedQty}개</div>
-            )}
-          </div>
-        )}
-      </td>
-
-      {/* 상태 */}
-      <td className="px-3 py-3"><StatusBadge status={item.status} /></td>
-
-      {/* 회수 사유 */}
-      <td className="px-3 py-3 max-w-[200px]">
-        <span className="text-[11px] text-gray-400 line-clamp-2 leading-relaxed" title={item.reason}>
-          {item.reason || '—'}
-        </span>
-      </td>
-
-      {/* 액션 */}
-      <td className="px-3 py-3 text-right">
-        <div className="flex items-center justify-end gap-1.5">
-          {item.status === 'recommended' && (
-            <button onClick={onAction}
-              className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
-              회수 요청
-            </button>
-          )}
-          {item.status === 'requested' && (
-            <button onClick={() => updateRecallStatus(item.id, 'in-transit')}
-              className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
-              이송 처리
-            </button>
-          )}
-          {item.status === 'in-transit' && (
-            <button onClick={() => updateRecallStatus(item.id, 'received', item.requestedQty)}
-              className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
-              입고 확인
-            </button>
-          )}
-          {item.status === 'received' && (
-            <span className="text-[11px] text-gray-400">완료</span>
-          )}
-        </div>
-      </td>
-    </tr>
+    </button>
   )
 }
 
@@ -733,20 +840,14 @@ function EmptyState({ onGenerate }: { onGenerate: () => void }) {
             <ChecklistItem ok={hasStore} label="이지체인 매장별 재고 (.xls)" />
             <ChecklistItem ok={hasOnline} label="이지어드민 어드민상품매출통계 (.xls)" critical />
           </div>
-          <div>
-            <Link to="/upload"
-              className="inline-block px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-xl text-sm font-semibold transition-colors">
-              데이터 업로드하기
-            </Link>
-          </div>
+          <Link to="/upload" className="inline-block px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-xl text-sm font-semibold transition-colors">
+            데이터 업로드하기
+          </Link>
         </>
       ) : (
         <>
-          <p className="text-sm text-gray-500 mb-5">
-            데이터 준비 완료 · 왼쪽 하단 <strong>'회수 분석 실행'</strong> 버튼을 클릭하세요
-          </p>
-          <button onClick={onGenerate}
-            className="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-xl text-sm font-semibold transition-colors">
+          <p className="text-sm text-gray-500 mb-5">데이터 준비 완료 · 왼쪽 하단 <strong>'회수 분석 실행'</strong> 버튼을 클릭하세요</p>
+          <button onClick={onGenerate} className="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-xl text-sm font-semibold transition-colors">
             지금 분석 실행
           </button>
         </>
