@@ -1,48 +1,60 @@
-import { supabase, SESSION_ID } from '../lib/supabase'
+import { supabase, SESSION_ID, isSupabaseEnabled } from '../lib/supabase'
+import { get, set, del } from 'idb-keyval'
 
 const TABLE = 'app_data'
 let _debounceTimer: ReturnType<typeof setTimeout> | null = null
-
-// 내가 방금 저장한 업데이트인지 판단하는 플래그 (실시간 루프 방지)
 let _myLastSavedAt = ''
 
 export function getMyLastSavedAt() { return _myLastSavedAt }
 
 export const cloudStorage = {
   getItem: async (name: string): Promise<string | null> => {
+    // Supabase 미설정 시 IndexedDB 폴백
+    if (!isSupabaseEnabled) {
+      return get<string>(name).then((v) => v ?? null).catch(() => null)
+    }
     try {
       const { data, error } = await supabase
         .from(TABLE)
         .select('state')
         .eq('id', name)
         .single()
-      // PGRST116 = row not found (정상)
       if (error && error.code !== 'PGRST116') throw error
       return data?.state ?? null
     } catch {
-      return null
+      // Supabase 실패 시 IndexedDB 폴백
+      return get<string>(name).then((v) => v ?? null).catch(() => null)
     }
   },
 
-  setItem: (_name: string, value: string): void => {
+  setItem: (name: string, value: string): void => {
     if (_debounceTimer) clearTimeout(_debounceTimer)
     _debounceTimer = setTimeout(async () => {
+      if (!isSupabaseEnabled) {
+        set(name, value).catch(() => {})
+        return
+      }
       try {
         const now = new Date().toISOString()
         _myLastSavedAt = now
         await supabase.from(TABLE).upsert({
-          id: _name,
+          id: name,
           state: value,
           session_id: SESSION_ID,
           updated_at: now,
         })
+        // Supabase 성공 시 IndexedDB에도 백업
+        set(name, value).catch(() => {})
       } catch {
-        // 저장 실패 시 무시 (다음 변경 시 재시도)
+        // Supabase 실패 시 IndexedDB에만 저장
+        set(name, value).catch(() => {})
       }
     }, 1500)
   },
 
   removeItem: async (name: string): Promise<void> => {
+    del(name).catch(() => {})
+    if (!isSupabaseEnabled) return
     try {
       await supabase.from(TABLE).delete().eq('id', name)
     } catch {}
