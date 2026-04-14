@@ -19,7 +19,7 @@ import {
 import { cn } from '../utils/helpers'
 import { useAppStore } from '../store/useAppStore'
 import { supabase, SESSION_ID } from '../lib/supabase'
-import { getMyLastSavedAt } from '../store/cloudStorage'
+import { getMyLastSavedAt, fetchLatestFromSupabase } from '../store/cloudStorage'
 
 const NAV_ITEMS = [
   { to: '/', label: '대시보드', icon: LayoutDashboard, exact: true },
@@ -50,11 +50,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           const remote = payload.new
           // 내가 저장한 업데이트면 무시 (루프 방지)
           if (remote?.session_id === SESSION_ID) return
-          // 내가 방금 저장한 것과 타임스탬프가 같으면 무시
           if (remote?.updated_at && remote.updated_at === getMyLastSavedAt()) return
 
           setSyncStatus('syncing')
-          await useAppStore.persist.rehydrate()
+          // IndexedDB 캐시를 건너뛰고 Supabase 최신 데이터 직접 가져오기
+          const raw = await fetchLatestFromSupabase('ozkiz-rt-storage')
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw)
+              // Zustand 상태 직접 업데이트 (rehydrate보다 빠름)
+              useAppStore.setState(parsed.state ?? parsed)
+            } catch {
+              await useAppStore.persist.rehydrate()
+            }
+          }
           setSyncStatus('synced')
           setTimeout(() => setSyncStatus('idle'), 3000)
         }
