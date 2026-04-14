@@ -137,6 +137,7 @@ export interface AppSettings {
     storeStagnation: number       // 매장 정체 가중치 (기본 0.25)
   }
   googleSheetsUrl?: string        // 구글 시트 CSV URL (자동 연동용)
+  googleChatWebhookUrl?: string   // Google Chat Incoming Webhook URL
   stores: Store[]
 }
 
@@ -152,5 +153,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     storeStagnation: 0.25,
   },
   googleSheetsUrl: '',
+  googleChatWebhookUrl: '',
   stores: [],
 }

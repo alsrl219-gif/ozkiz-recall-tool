@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Trash2, Save, RotateCcw, HelpCircle, Bot, CheckCircle, AlertCircle, Loader2, Eye, EyeOff } from 'lucide-react'
+import { Plus, Trash2, Save, RotateCcw, HelpCircle, Bot, CheckCircle, AlertCircle, Loader2, Eye, EyeOff, MessageSquare, ExternalLink } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { DEFAULT_SETTINGS } from '../types'
 import type { Store } from '../types'
@@ -206,6 +206,9 @@ export default function Settings() {
         </div>
       </Section>
 
+      {/* 알림 설정 */}
+      <NotificationSection form={form} setForm={setForm} />
+
       {/* 자동화 설정 */}
       <AutomationSection />
 
@@ -297,6 +300,87 @@ function WeightField({
           className="w-24 accent-brand-500"
         />
         <span className="text-sm font-mono text-gray-700 w-8">{value.toFixed(2)}</span>
+      </div>
+    </div>
+  )
+}
+
+// ─── 알림 설정 섹션 ──────────────────────────────────────────────
+function NotificationSection({
+  form,
+  setForm,
+}: {
+  form: ReturnType<typeof useAppStore.getState>['settings']
+  setForm: React.Dispatch<React.SetStateAction<ReturnType<typeof useAppStore.getState>['settings']>>
+}) {
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+
+  async function handleTest() {
+    const url = form.googleChatWebhookUrl?.trim()
+    if (!url) return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '✅ *OZKIZ 회수 관리 툴* - 알림 테스트 메시지입니다.' }),
+      })
+      setTestResult({ ok: true, msg: '테스트 메시지를 전송했습니다. Google Chat에서 확인하세요.' })
+    } catch {
+      setTestResult({ ok: false, msg: '전송 실패 - 웹훅 URL을 확인하세요.' })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-card p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        <MessageSquare className="w-4 h-4 text-brand-500" />
+        <h3 className="text-sm font-semibold text-gray-900">알림 설정</h3>
+      </div>
+
+      <div className="p-3 bg-blue-50 rounded-xl text-xs text-blue-700 leading-relaxed">
+        <strong>Google Chat Incoming Webhook</strong>을 등록하면, 회수 요청 시 담당자에게 자동으로
+        Google Chat 메시지가 발송됩니다.
+        <br />
+        <a
+          href="https://developers.google.com/chat/how-tos/webhooks"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 font-semibold underline mt-1"
+        >
+          웹훅 설정 방법 보기 <ExternalLink className="w-3 h-3" />
+        </a>
+      </div>
+
+      <Field label="Google Chat Webhook URL">
+        <input
+          value={form.googleChatWebhookUrl ?? ''}
+          onChange={(e) =>
+            setForm((f) => ({ ...f, googleChatWebhookUrl: e.target.value }))
+          }
+          placeholder="https://chat.googleapis.com/v1/spaces/..."
+          className="input w-full text-sm"
+        />
+      </Field>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={handleTest}
+          disabled={testing || !form.googleChatWebhookUrl?.trim()}
+          className="flex items-center gap-2 px-3 py-2 border border-brand-200 text-brand-700 text-xs font-semibold rounded-lg hover:bg-brand-50 transition-colors disabled:opacity-40"
+        >
+          {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageSquare className="w-3.5 h-3.5" />}
+          테스트 메시지 전송
+        </button>
+        {testResult && (
+          <span className={`text-xs ${testResult.ok ? 'text-green-600' : 'text-red-500'}`}>
+            {testResult.ok ? '✓' : '✗'} {testResult.msg}
+          </span>
+        )}
       </div>
     </div>
   )
