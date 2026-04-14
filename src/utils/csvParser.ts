@@ -183,7 +183,8 @@ export function parseAdminSalesPeriod(
 
 // ─── 이지체인 파일 형식 감지 ─────────────────────────────────────
 // 매장이 컬럼으로 펼쳐진 피벗 형태: OF1_원주중앙점, OF2_xxx점 ...
-const STORE_COL_PATTERN = /^[A-Z]{1,3}\d+_/
+// OF5_, OFH_, OFN_, OFZ_ 등 영문2~3자 + 영숫자1자 + 언더스코어 패턴
+const STORE_COL_PATTERN = /^[A-Z]{2,3}[A-Z0-9]_/
 const NON_STORE_COLS = new Set([
   '공급처', '상품코드', '카테고리', '등록일', '상품명', '옵션',
   '원가', '판매가격', '공급가', '접수', '송장',
