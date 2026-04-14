@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -14,9 +14,12 @@ import {
   BookOpen,
   CheckCircle2,
   AlertCircle,
+  Users,
 } from 'lucide-react'
 import { cn } from '../utils/helpers'
 import { useAppStore } from '../store/useAppStore'
+import { supabase, SESSION_ID } from '../lib/supabase'
+import { getMyLastSavedAt } from '../store/cloudStorage'
 
 const NAV_ITEMS = [
   { to: '/', label: '대시보드', icon: LayoutDashboard, exact: true },
@@ -32,8 +35,34 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'synced' | 'syncing'>('idle')
   const location = useLocation()
   const generateRecalls = useAppStore((s) => s.generateRecalls)
+
+  // 실시간 동기화: 다른 사람이 데이터를 바꾸면 자동으로 내 화면도 갱신
+  useEffect(() => {
+    const channel = supabase
+      .channel('app-sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'app_data' },
+        async (payload: { new?: { session_id?: string; updated_at?: string } }) => {
+          const remote = payload.new
+          // 내가 저장한 업데이트면 무시 (루프 방지)
+          if (remote?.session_id === SESSION_ID) return
+          // 내가 방금 저장한 것과 타임스탬프가 같으면 무시
+          if (remote?.updated_at && remote.updated_at === getMyLastSavedAt()) return
+
+          setSyncStatus('syncing')
+          await useAppStore.persist.rehydrate()
+          setSyncStatus('synced')
+          setTimeout(() => setSyncStatus('idle'), 3000)
+        }
+      )
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [])
   const recallItems = useAppStore((s) => s.recallItems)
   const urgentCount = recallItems.filter(
     (r) => r.priority === 'urgent' && r.status === 'recommended'
@@ -79,6 +108,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold text-gray-900 tracking-tight leading-none">OZKIZ</div>
             <div className="text-[9px] text-brand-500 font-semibold tracking-widest uppercase mt-0.5">Recall Tool</div>
+          </div>
+          {/* 실시간 동기화 상태 */}
+          <div title={syncStatus === 'syncing' ? '동기화 중...' : syncStatus === 'synced' ? '동기화 완료' : '공유 모드'}>
+            <Users className={cn(
+              'w-3.5 h-3.5 flex-shrink-0 transition-colors',
+              syncStatus === 'syncing' ? 'text-amber-400 animate-pulse' :
+              syncStatus === 'synced' ? 'text-green-500' : 'text-gray-300'
+            )} />
           </div>
           <button
             className="lg:hidden text-gray-400 hover:text-gray-700 p-0.5"

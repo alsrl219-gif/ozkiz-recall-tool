@@ -1,18 +1,9 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { get, set, del } from 'idb-keyval'
+import { cloudStorage } from './cloudStorage'
 
-// IndexedDB 기반 스토리지 (localStorage 5MB 제한 없음)
-// 빠른 연속 저장을 방지하기 위해 2초 디바운스 적용
-let _debounceTimer: ReturnType<typeof setTimeout> | null = null
-const idbStorage = createJSONStorage(() => ({
-  getItem: (name: string) => get<string>(name).then((v) => v ?? null).catch(() => null),
-  setItem: (name: string, value: string) => {
-    if (_debounceTimer) clearTimeout(_debounceTimer)
-    _debounceTimer = setTimeout(() => set(name, value).catch(() => {}), 1500)
-  },
-  removeItem: (name: string) => del(name).catch(() => {}),
-}))
+// Supabase 기반 공유 스토리지 (모든 사용자가 동일한 데이터 공유)
+const sharedStorage = createJSONStorage(() => cloudStorage)
 import type {
   Product,
   Store,
@@ -218,8 +209,8 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'ozkiz-rt-storage',
-      storage: idbStorage,
-      // IndexedDB는 용량 제한 없으므로 전체 데이터 저장 (새로고침 후에도 유지)
+      storage: sharedStorage,
+      // Supabase에 전체 상태 저장 → 모든 사용자 공유
       partialize: (s) => ({
         products: s.products,
         stores: s.stores,
