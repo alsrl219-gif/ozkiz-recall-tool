@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import {
   Search, Package, ChevronDown, ChevronRight,
   Store, AlertTriangle, CheckCircle2, ArrowRight,
@@ -9,12 +9,16 @@ import StoreRecallModal from '../components/StoreRecallModal'
 import { cn, formatNumber } from '../utils/helpers'
 import type { RecallItem } from '../types'
 
+const PAGE_SIZE = 20
+
 export default function StoreView() {
   const { products, storeStocks, stores, centerStocks, recallItems, getStore } = useAppStore()
   const [search, setSearch] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [selectedItem, setSelectedItem] = useState<RecallItem | null>(null)
   const [filterMode, setFilterMode] = useState<'all' | 'recall'>('all')
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const sentinelRef = useRef<HTMLDivElement>(null)
 
   // 매장 재고가 있는 상품만
   const stockedProductIds = useMemo(() => {
@@ -47,6 +51,28 @@ export default function StoreView() {
       })
       .sort((a, b) => b.urgentCount - a.urgentCount || b.myRecalls.length - a.myRecalls.length)
   }, [products, storeStocks, centerStocks, recallItems, search, filterMode, stockedProductIds])
+
+  // 검색/필터 바뀌면 다시 처음부터
+  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, filterMode])
+
+  // 무한 스크롤: sentinel이 화면에 들어오면 20개 추가
+  const loadMore = useCallback(() => {
+    setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, productList.length))
+  }, [productList.length])
+
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el) return
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) loadMore() },
+      { rootMargin: '200px' }
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [loadMore])
+
+  const visibleList = productList.slice(0, visibleCount)
+  const hasMore = visibleCount < productList.length
 
   const totalRecallProducts = products.filter((p) =>
     recallItems.some((r) => r.productId === p.id && r.status !== 'received' && r.status !== 'cancelled')
@@ -112,7 +138,7 @@ export default function StoreView() {
         </div>
       ) : (
         <div className="space-y-2">
-          {productList.map(({ product, myStocks, totalStoreQty, centerQty, myRecalls, urgentCount }) => {
+          {visibleList.map(({ product, myStocks, totalStoreQty, centerQty, myRecalls, urgentCount }) => {
             const isExpanded = expandedId === product.id
             return (
               <div
@@ -237,6 +263,23 @@ export default function StoreView() {
               </div>
             )
           })}
+
+          {/* 무한 스크롤 sentinel */}
+          <div ref={sentinelRef} className="h-4" />
+          {hasMore && (
+            <div className="flex items-center justify-center py-4 gap-2 text-sm text-gray-400">
+              <svg className="w-4 h-4 animate-spin text-brand-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/>
+              </svg>
+              불러오는 중… ({visibleCount}/{productList.length})
+            </div>
+          )}
+          {!hasMore && productList.length > PAGE_SIZE && (
+            <div className="text-center py-4 text-xs text-gray-300">
+              전체 {productList.length}개 상품 표시 완료
+            </div>
+          )}
         </div>
       )}
 
