@@ -9,6 +9,7 @@ import {
   parseAdminSalesPeriod,
   parseStoreStock,
   parseStoreStockWide,
+  extractProductInfoFromStoreWide,
   parseChainSalesWide,
   detectStoreFormat,
   getStoreColumns,
@@ -160,6 +161,25 @@ export default function Upload() {
       let stocks
       if (chainStoreFormat === 'wide') {
         stocks = parseStoreStockWide(allRows, headers)
+        // 이지체인 Wide 파일에서 상품 옵션(색상/사이즈) 정보 추출 → 기존 상품 업데이트
+        const productInfo = extractProductInfoFromStoreWide(allRows, headers)
+        if (productInfo.length > 0) {
+          // 기존 상품과 merge: 이름·카테고리·시즌·옵션(color) 업데이트
+          const existing = store.products
+          const merged = productInfo.map((pi) => {
+            const ex = existing.find((p) => p.id === pi.id)
+            return {
+              id: pi.id,
+              name: pi.name || ex?.name || pi.id,
+              category: pi.category || ex?.category || '',
+              season: pi.season || ex?.season || '',
+              color: pi.color ?? ex?.color,
+              size: ex?.size,
+              imageUrl: ex?.imageUrl,
+            }
+          })
+          store.addProducts(merged)
+        }
       } else {
         if (!mapping.productId || !mapping.qty || !mapping.storeId) return
         stocks = parseStoreStock(allRows, mapping as ColumnMapping)

@@ -379,6 +379,12 @@ const CATEGORY_CANDIDATES = [
 const SEASON_CANDIDATES = [
   '시즌', '시즌코드', 'season',
 ]
+const COLOR_CANDIDATES = [
+  '옵션', '색상', '컬러', 'color', '색', '옵션명',
+]
+const SIZE_CANDIDATES = [
+  '사이즈', '치수', 'size', '규격', '호수', '사이즈코드',
+]
 const IMAGE_CANDIDATES = [
   '이미지URL', '이미지 URL', 'imageUrl', 'image_url',
 ]
@@ -418,8 +424,43 @@ export function inferColumnMapping(
     revenue: findCol(headers, REVENUE_CANDIDATES),
     category: findCol(headers, CATEGORY_CANDIDATES),
     season: findCol(headers, SEASON_CANDIDATES),
+    color: findCol(headers, COLOR_CANDIDATES),
+    size: findCol(headers, SIZE_CANDIDATES),
     imageUrl: findCol(headers, IMAGE_CANDIDATES),
   }
+}
+
+// ─── 이지체인 Wide 파일에서 상품 옵션 정보 추출 ─────────────────────
+// parseStoreStockWide는 재고만 반환하므로, 상품명·옵션 정보를 별도로 추출
+export function extractProductInfoFromStoreWide(
+  rows: ParsedRow[],
+  headers: string[],
+): Pick<Product, 'id' | 'name' | 'category' | 'season' | 'color'>[] {
+  const hasName = headers.includes('상품명')
+  const hasOption = headers.includes('옵션')
+  const catCol = headers.find((h) => CATEGORY_CANDIDATES.includes(h.trim())) ?? ''
+  const seasonCol = headers.find((h) => SEASON_CANDIDATES.includes(h.trim())) ?? ''
+
+  const seen = new Set<string>()
+  const result: Pick<Product, 'id' | 'name' | 'category' | 'season' | 'color'>[] = []
+
+  for (const row of rows) {
+    const productId = (row['상품코드'] ?? '').trim()
+    if (!productId || seen.has(productId)) continue
+    seen.add(productId)
+
+    const color = hasOption ? (row['옵션']?.trim() || undefined) : undefined
+
+    result.push({
+      id: productId,
+      name: hasName ? (row['상품명']?.trim() ?? productId) : productId,
+      category: catCol ? (row[catCol]?.trim() ?? '') : '',
+      season: seasonCol ? (row[seasonCol]?.trim() ?? '') : '',
+      color,
+    })
+  }
+
+  return result
 }
 
 // ─── 기존 호환: 일별 판매 파싱 (날짜 컬럼이 있는 경우) ────────────
