@@ -106,12 +106,22 @@ export default function Upload() {
 
   // ── 이지어드민 현재고 확정 ───────────────────────────────────
   function commitAdminStock() {
-    const { allRows, mapping } = adminStock
+    const { allRows, mapping, headers } = adminStock
     if (!mapping.productId || !mapping.qty) return
     try {
       const m = mapping as ColumnMapping
       if (allRows.length === 0) throw new Error('파싱된 데이터가 없습니다. 파일 형식을 확인해주세요.')
       const { centerStocks, products, barcodeMap } = parseAdminStock(allRows, m)
+
+      // mapping.color가 안 잡혔을 경우 fallback: extractProductInfoFromStoreWide로 보완
+      if (!m.color) {
+        const extra = extractProductInfoFromStoreWide(allRows, headers)
+        extra.forEach((pi) => {
+          const p = products.find((x) => x.id === pi.id)
+          if (p && pi.color) p.color = pi.color
+        })
+      }
+
       store.setCenterStocks(centerStocks)
       store.addProducts(products)
       store.setBarcodeMap(barcodeMap)
@@ -333,7 +343,7 @@ export default function Upload() {
         sourceType="admin_stock"
         onFile={(f) => handleFile(f, 'admin_stock', setAdminStock)}
         onCommit={commitAdminStock}
-        showFields={['productId', 'barcode', 'productName', 'qty', 'category', 'season', 'imageUrl']}
+        showFields={['productId', 'barcode', 'productName', 'color', 'qty', 'category', 'season', 'imageUrl']}
         canCommit={!!adminStock.mapping.productId && !!adminStock.mapping.qty}
       />
 

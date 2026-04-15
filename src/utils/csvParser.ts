@@ -430,33 +430,33 @@ export function inferColumnMapping(
   }
 }
 
-// ─── 이지체인 Wide 파일에서 상품 옵션 정보 추출 ─────────────────────
+// ─── 이지체인 Wide / 이지어드민 파일에서 상품 옵션 정보 추출 ────────
 // parseStoreStockWide는 재고만 반환하므로, 상품명·옵션 정보를 별도로 추출
+// findCol을 사용해 '옵션', '색상', '컬러' 등 다양한 컬럼명을 유연하게 탐색
 export function extractProductInfoFromStoreWide(
   rows: ParsedRow[],
   headers: string[],
 ): Pick<Product, 'id' | 'name' | 'category' | 'season' | 'color'>[] {
-  const hasName = headers.includes('상품명')
-  const hasOption = headers.includes('옵션')
-  const catCol = headers.find((h) => CATEGORY_CANDIDATES.includes(h.trim())) ?? ''
-  const seasonCol = headers.find((h) => SEASON_CANDIDATES.includes(h.trim())) ?? ''
+  const optionCol  = findCol(headers, COLOR_CANDIDATES)      // '옵션', '색상', '컬러' 등
+  const nameCol    = findCol(headers, PRODUCT_NAME_CANDIDATES) // '상품명'
+  const catCol     = findCol(headers, CATEGORY_CANDIDATES)
+  const seasonCol  = findCol(headers, SEASON_CANDIDATES)
+  const idCol      = findCol(headers, PRODUCT_ID_CANDIDATES)  // '상품코드'
 
   const seen = new Set<string>()
   const result: Pick<Product, 'id' | 'name' | 'category' | 'season' | 'color'>[] = []
 
   for (const row of rows) {
-    const productId = (row['상품코드'] ?? '').trim()
+    const productId = idCol ? (row[idCol] ?? '').trim() : (row['상품코드'] ?? '').trim()
     if (!productId || seen.has(productId)) continue
     seen.add(productId)
 
-    const color = hasOption ? (row['옵션']?.trim() || undefined) : undefined
-
     result.push({
       id: productId,
-      name: hasName ? (row['상품명']?.trim() ?? productId) : productId,
+      name: nameCol ? (row[nameCol]?.trim() ?? productId) : productId,
       category: catCol ? (row[catCol]?.trim() ?? '') : '',
       season: seasonCol ? (row[seasonCol]?.trim() ?? '') : '',
-      color,
+      color: optionCol ? (row[optionCol]?.trim() || undefined) : undefined,
     })
   }
 
