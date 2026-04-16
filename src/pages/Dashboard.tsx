@@ -849,10 +849,19 @@ function SkuSection({
                 <td className="px-3 py-2.5 text-right">
                   <div className="flex items-center justify-end gap-1.5">
                     {recall?.status === 'recommended' && (
-                      <button onClick={() => onItemAction(recall)}
-                        className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
-                        회수 요청
-                      </button>
+                      <>
+                        <button onClick={() => onItemAction(recall)}
+                          className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                          회수 요청
+                        </button>
+                        <button
+                          onClick={() => updateRecallStatus(recall.id, 'cancelled')}
+                          title="이 항목 회수 제외"
+                          className="flex items-center gap-0.5 px-2 py-1 text-[10px] font-medium text-gray-400 hover:text-red-500 bg-gray-100 hover:bg-red-50 border border-gray-200 hover:border-red-200 rounded-md transition-colors"
+                        >
+                          <XCircle className="w-2.5 h-2.5" />제외
+                        </button>
+                      </>
                     )}
                     {recall?.status === 'requested' && (
                       <>
