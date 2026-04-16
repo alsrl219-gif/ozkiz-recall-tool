@@ -488,7 +488,7 @@ export default function Dashboard() {
                   onGroupCheck={() => toggleGroupSelect(group.key)}
                   onItemCheck={toggleSelect}
                   onItemAction={setSelectedItem}
-                  onRevert={(id) => updateRecallStatus(id, 'in-transit')}
+                  onRevert={(id) => updateRecallStatus(id, 'recommended')}
                   storeStocks={storeStocks}
                   centerStocks={centerStocks}
                   getStore={getStore}
@@ -855,23 +855,41 @@ function SkuSection({
                       </button>
                     )}
                     {recall?.status === 'requested' && (
-                      <button onClick={() => updateRecallStatus(recall.id, 'in-transit')}
-                        className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
-                        이송 처리
-                      </button>
+                      <>
+                        <button onClick={() => updateRecallStatus(recall.id, 'in-transit')}
+                          className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                          이송 처리
+                        </button>
+                        <button
+                          onClick={() => onRevert(recall.id)}
+                          title="요청 취소 → 회수권장으로 초기화"
+                          className="flex items-center gap-0.5 px-2 py-1 text-[10px] font-medium text-gray-500 hover:text-orange-600 bg-gray-100 hover:bg-orange-50 border border-gray-200 hover:border-orange-200 rounded-md transition-colors"
+                        >
+                          <Undo2 className="w-2.5 h-2.5" />원복
+                        </button>
+                      </>
                     )}
                     {recall?.status === 'in-transit' && (
-                      <button onClick={() => updateRecallStatus(recall.id, 'received', recall.requestedQty)}
-                        className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
-                        입고 확인
-                      </button>
+                      <>
+                        <button onClick={() => updateRecallStatus(recall.id, 'received', recall.requestedQty)}
+                          className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                          입고 확인
+                        </button>
+                        <button
+                          onClick={() => onRevert(recall.id)}
+                          title="이송중 취소 → 회수권장으로 초기화"
+                          className="flex items-center gap-0.5 px-2 py-1 text-[10px] font-medium text-gray-500 hover:text-orange-600 bg-gray-100 hover:bg-orange-50 border border-gray-200 hover:border-orange-200 rounded-md transition-colors"
+                        >
+                          <Undo2 className="w-2.5 h-2.5" />원복
+                        </button>
+                      </>
                     )}
                     {recall?.status === 'received' && (
                       <div className="flex items-center gap-1.5">
                         <span className="text-[11px] text-green-600 font-medium">완료</span>
                         <button
                           onClick={() => onRevert(recall.id)}
-                          title="입고완료 취소 → 이송중으로 원복"
+                          title="입고완료 취소 → 회수권장으로 초기화"
                           className="flex items-center gap-0.5 px-2 py-1 text-[10px] font-medium text-gray-500 hover:text-orange-600 bg-gray-100 hover:bg-orange-50 border border-gray-200 hover:border-orange-200 rounded-md transition-colors"
                         >
                           <Undo2 className="w-2.5 h-2.5" />원복
