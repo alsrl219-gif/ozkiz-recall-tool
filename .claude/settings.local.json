@@ -33,7 +33,10 @@
       "WebFetch(domain:sellout.openhan.ai)",
       "Bash(npx tsc:*)",
       "Bash(python -c ':*)",
-      "Bash(npx playwright:*)"
+      "Bash(npx playwright:*)",
+      "Bash(gh pr create --title 'Claude Code 도구 허용 권한 업데이트 \\(settings.local.json\\)' --body ':*)",
+      "Bash(where gh:*)",
+      "Bash(winget list:*)"
     ]
   }
 }
