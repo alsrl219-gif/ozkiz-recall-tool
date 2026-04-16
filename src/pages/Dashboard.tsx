@@ -705,6 +705,7 @@ function SkuSection({
 
   // 재고 있는 매장 + 회수 대상 매장 모두 포함
   const skuStoreStocks = storeStocks.filter((s) => s.productId === skuId && s.qty > 0)
+  const totalStoreQtyForSku = skuStoreStocks.reduce((sum, s) => sum + s.qty, 0)
   const recallStoreIds = new Set(recalls.map((r) => r.storeId))
   const allStoreIds = [...new Set([...skuStoreStocks.map((s) => s.storeId), ...recalls.map((r) => r.storeId)])]
 
@@ -744,12 +745,19 @@ function SkuSection({
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <Warehouse className="w-3 h-3 text-gray-400" />
-          <span className="text-xs text-gray-500">센터재고</span>
-          <span className={cn('text-xs font-bold ml-1', centerQty === 0 ? 'text-red-500' : 'text-gray-800')}>
-            {formatNumber(centerQty)}개
-          </span>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="flex items-center gap-1">
+            <Store className="w-3 h-3 text-gray-400" />
+            <span className="text-xs text-gray-500">매장합계</span>
+            <span className="text-xs font-bold ml-1 text-gray-700">{formatNumber(totalStoreQtyForSku)}개</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <Warehouse className="w-3 h-3 text-gray-400" />
+            <span className="text-xs text-gray-500">센터재고</span>
+            <span className={cn('text-xs font-bold ml-1', centerQty === 0 ? 'text-red-500' : 'text-gray-800')}>
+              {formatNumber(centerQty)}개
+            </span>
+          </div>
         </div>
       </div>
 
