@@ -124,13 +124,14 @@ export const useAppStore = create<AppState>()(
         set((s) => ({ uploadSessions: [session, ...s.uploadSessions] })),
 
       generateRecalls: () => {
-        const { sales, periodSales, centerStocks, storeStocks, settings, recallItems } = get()
+        const { sales, periodSales, centerStocks, storeStocks, settings, recallItems, products } = get()
         const recommendations = generateRecommendations({
           sales,
           periodSales,
           centerStocks,
           storeStocks,
           settings,
+          products,
         })
 
         // 기존 'recommended' 상태 항목만 교체 (요청된 것은 유지)

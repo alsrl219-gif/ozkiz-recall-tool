@@ -16,6 +16,7 @@ import {
   parseStoreSalesPeriod,
   parseCoupangSales,
   inferColumnMapping,
+  detectSeasonColumnFromData,
   fetchGoogleSheetCSV,
   parseCSVText,
 } from '../utils/csvParser'
@@ -90,6 +91,14 @@ export default function Upload() {
     try {
       const { headers, rows } = await parseCSV(file)
       const mapping = inferColumnMapping(headers, sourceType)
+
+      // 시즌 컬럼: 이름 매칭 실패 시 값 패턴으로 재탐색
+      // (이지어드민의 '상품추가항목3' 같이 이름이 달라도 "2025SS", "2026FW" 값으로 감지)
+      if (!mapping.season) {
+        const detected = detectSeasonColumnFromData(headers, rows)
+        if (detected) mapping.season = detected
+      }
+
       // 이지체인: 피벗(wide) vs 일반(long) 자동 감지
       if (sourceType === 'chain_store') {
         setChainStoreFormat(detectStoreFormat(headers))
@@ -109,7 +118,15 @@ export default function Upload() {
     const { allRows, mapping, headers } = adminStock
     if (!mapping.productId || !mapping.qty) return
     try {
-      const m = mapping as ColumnMapping
+      // mapping을 복사해서 fallback 감지를 반영 (원본 state 변경 X)
+      const m: ColumnMapping = { ...mapping } as ColumnMapping
+
+      // season 컬럼 fallback: 이름 매핑 없으면 값 패턴으로 재탐색
+      if (!m.season) {
+        const detected = detectSeasonColumnFromData(headers, allRows)
+        if (detected) m.season = detected
+      }
+
       if (allRows.length === 0) throw new Error('파싱된 데이터가 없습니다. 파일 형식을 확인해주세요.')
       const { centerStocks, products, barcodeMap } = parseAdminStock(allRows, m)
 
@@ -119,6 +136,15 @@ export default function Upload() {
         extra.forEach((pi) => {
           const p = products.find((x) => x.id === pi.id)
           if (p && pi.color) p.color = pi.color
+        })
+      }
+
+      // season도 미설정이면 extractProductInfoFromStoreWide로 보완
+      if (!m.season) {
+        const extra = extractProductInfoFromStoreWide(allRows, headers)
+        extra.forEach((pi) => {
+          const p = products.find((x) => x.id === pi.id)
+          if (p && pi.season && !p.season) p.season = pi.season
         })
       }
 

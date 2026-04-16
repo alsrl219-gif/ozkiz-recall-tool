@@ -440,7 +440,8 @@ export function extractProductInfoFromStoreWide(
   const optionCol  = findCol(headers, COLOR_CANDIDATES)      // '옵션', '색상', '컬러' 등
   const nameCol    = findCol(headers, PRODUCT_NAME_CANDIDATES) // '상품명'
   const catCol     = findCol(headers, CATEGORY_CANDIDATES)
-  const seasonCol  = findCol(headers, SEASON_CANDIDATES)
+  // 이름 매칭 우선, 없으면 값 패턴으로 감지 (이지어드민 '상품추가항목3' 등)
+  const seasonCol  = findCol(headers, SEASON_CANDIDATES) || detectSeasonColumnFromData(headers, rows)
   const idCol      = findCol(headers, PRODUCT_ID_CANDIDATES)  // '상품코드'
 
   const seen = new Set<string>()
@@ -461,6 +462,30 @@ export function extractProductInfoFromStoreWide(
   }
 
   return result
+}
+
+// ─── 값 패턴 기반 시즌 컬럼 자동 감지 ──────────────────────────────
+// 이지어드민은 시즌을 '상품추가항목3' 같은 이름에 저장하므로
+// 이름 매칭이 아니라 값 패턴으로 컬럼을 찾는다:
+//   영문 코드: "2025SS", "2026FW" 등
+//   한글 값:   "봄", "여름", "가을", "겨울", "봄/가을", "사계절" 등
+const SEASON_VALUE_RE = /^20\d{2}(SS|FW|SP|FA|SU|AU|WI)$/i
+const KOREAN_SEASON_RE = /^(봄|여름|가을|겨울|사계절)(\/?(봄|여름|가을|겨울))*$/
+
+function isSeasonValue(v: string): boolean {
+  return SEASON_VALUE_RE.test(v) || KOREAN_SEASON_RE.test(v)
+}
+
+export function detectSeasonColumnFromData(headers: string[], rows: ParsedRow[]): string {
+  const sample = rows.slice(0, 30)
+  for (const h of headers) {
+    const nonEmpty = sample.filter((r) => (r[h]?.trim() ?? '').length > 0)
+    if (nonEmpty.length === 0) continue
+    const matchCount = nonEmpty.filter((r) => isSeasonValue(r[h]?.trim() ?? '')).length
+    // 비어있지 않은 셀 중 30% 이상이 시즌 패턴이면 해당 컬럼을 시즌으로 판정
+    if (matchCount >= Math.max(1, Math.floor(nonEmpty.length * 0.3))) return h
+  }
+  return ''
 }
 
 // ─── 기존 호환: 일별 판매 파싱 (날짜 컬럼이 있는 경우) ────────────

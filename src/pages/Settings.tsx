@@ -64,6 +64,18 @@ export default function Settings() {
             className="input w-32"
           />
         </Field>
+        <Field label="SKU당 최대 회수 수량" hint="매장에서 한 번에 보내기 어렵기 때문에 SKU당 최대 수량을 제한합니다 (기본 5개)">
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              value={form.maxRecallQtyPerSku ?? 5}
+              min={1} max={20}
+              onChange={(e) => setForm((f) => ({ ...f, maxRecallQtyPerSku: parseInt(e.target.value) || 5 }))}
+              className="input w-24"
+            />
+            <span className="text-xs text-gray-400">개 / SKU · 매장</span>
+          </div>
+        </Field>
       </Section>
 
       {/* 우선순위 임계값 */}

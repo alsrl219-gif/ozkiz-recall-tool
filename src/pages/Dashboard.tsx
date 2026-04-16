@@ -4,14 +4,41 @@ import {
   Search, Filter, ChevronDown, ChevronRight,
   CheckCircle2, XCircle, AlertCircle, Layers,
   Download, Send, Square, CheckSquare, Loader2, Undo2,
-  Store, Warehouse,
+  Store, Warehouse, CalendarDays, LayoutGrid,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAppStore } from '../store/useAppStore'
 import { PriorityBadge, StatusBadge } from '../components/RecallPriorityBadge'
 import StoreRecallModal from '../components/StoreRecallModal'
 import { cn, formatNumber } from '../utils/helpers'
-import type { RecallItem, RecallPriority, RecallStatus } from '../types'
+import { getCurrentSeasonLabel, getCurrentSeason, getProductSeasonType } from '../utils/analysis'
+import type { RecallItem, RecallPriority, RecallStatus, Product } from '../types'
+
+// ─── 이름 기반 시즌 추정 ─────────────────────────────────────────
+// product.season 필드가 없을 때 상품명 키워드로 FW/SS 추정
+const FW_KEYWORDS = ['패딩', '다운', '덕다운', '구스다운', '점퍼', '파카', '코트', '자켓', '자켓트', '니트', '스웨터', '후리스', '플리스', '기모', '울', '코듀로이', '맨투맨']
+const SS_KEYWORDS = ['반팔', '반바지', '민소매', '나시', '린넨', '시어', '쿨링', '래쉬가드', '수영복', '쇼츠', '탱크탑']
+
+function inferSeasonFromName(name: string): 'SS' | 'FW' | null {
+  const lower = name.toLowerCase()
+  if (FW_KEYWORDS.some((k) => lower.includes(k))) return 'FW'
+  if (SS_KEYWORDS.some((k) => lower.includes(k))) return 'SS'
+  return null
+}
+
+function getEffectiveSeason(product: Product | undefined): { type: 'SS' | 'FW' | null; inferred: boolean; label: string } {
+  const rawSeason = product?.season?.trim() ?? ''
+  if (rawSeason) {
+    // season 필드가 있으면: 타입 판별과 무관하게 원본 레이블 항상 반환
+    // (e.g. "봄/가을" → type=null 이지만 label='봄/가을' 으로 뱃지 표시)
+    const type = getProductSeasonType(rawSeason)
+    return { type, inferred: false, label: rawSeason }
+  }
+  // season 필드 없으면: 상품명 키워드로 추정
+  const fromName = inferSeasonFromName(product?.name ?? '')
+  if (fromName) return { type: fromName, inferred: true, label: fromName === 'FW' ? '❄️FW 추정' : '🌸SS 추정' }
+  return { type: null, inferred: false, label: '' }
+}
 
 const PAGE_SIZE = 25
 const PRIORITY_ORDER: Record<RecallPriority, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
@@ -94,6 +121,7 @@ export default function Dashboard() {
   const [filterStore, setFilterStore] = useState('all')
   const [showFilters, setShowFilters] = useState(false)
   const [cardFilter, setCardFilter] = useState<'urgent' | 'transit' | 'completed' | null>(null)
+  const [filterSeason, setFilterSeason] = useState<'current' | 'all'>('current')
 
   const [selectedItem, setSelectedItem] = useState<RecallItem | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -101,6 +129,7 @@ export default function Dashboard() {
 
   const [sending, setSending] = useState(false)
   const [sendResult, setSendResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [showHeatmap, setShowHeatmap] = useState(false)
 
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const sentinelRef = useRef<HTMLDivElement>(null)
@@ -132,6 +161,17 @@ export default function Dashboard() {
     else if (cardFilter === 'completed') list = list.filter((r) => r.status === 'received')
     else list = list.filter((r) => r.status !== 'received' && r.status !== 'cancelled') // 기본: 활성
 
+    // 시즌 필터 (현재 시즌만: SS/FW 판별 가능한 상품만 제외, 미설정은 포함)
+    if (filterSeason === 'current') {
+      const cur = getCurrentSeason()
+      list = list.filter((r) => {
+        const p = products.find((x) => x.id === r.productId)
+        const { type } = getEffectiveSeason(p)
+        if (type === null) return true  // 시즌 미판별 → 포함
+        return type === cur
+      })
+    }
+
     if (search) {
       const q = search.toLowerCase()
       list = list.filter((r) => {
@@ -144,7 +184,7 @@ export default function Dashboard() {
     if (filterStatus !== 'all') list = list.filter((r) => r.status === filterStatus)
     if (filterStore !== 'all') list = list.filter((r) => r.storeId === filterStore)
     return list
-  }, [recallItems, search, filterPriority, filterStatus, filterStore, cardFilter, products, stores])
+  }, [recallItems, search, filterPriority, filterStatus, filterStore, cardFilter, filterSeason, products, stores])
 
   // ── 상품별 그룹핑 (PKU 기준) ──────────────────────────────────
   const productGroups = useMemo(() => {
@@ -164,6 +204,15 @@ export default function Dashboard() {
       const active = g.recalls.filter((r) => r.status !== 'received' && r.status !== 'cancelled')
       const priorities = active.map((r) => PRIORITY_ORDER[r.priority])
       const minP = priorities.length > 0 ? Math.min(...priorities) : 3
+      // 대표 시즌: SKU 중 시즌 레이블이 있는 첫 번째 (type=null이어도 label 있으면 표시)
+      const seasonInfo = (() => {
+        for (const skuId of g.skuIds) {
+          const p = getProduct(skuId)
+          const info = getEffectiveSeason(p)
+          if (info.label) return info
+        }
+        return { type: null, inferred: false, label: '' }
+      })()
       return {
         ...g,
         highestPriority: (['urgent', 'high', 'medium', 'low'] as RecallPriority[])[minP],
@@ -172,6 +221,9 @@ export default function Dashboard() {
         totalRecallQty: active.reduce((s, r) => s + r.suggestedQty, 0),
         storeCount: new Set(active.map((r) => r.storeId)).size,
         activeCount: active.length,
+        seasonType: seasonInfo.type,
+        seasonLabel: seasonInfo.label,
+        seasonInferred: seasonInfo.inferred,
       }
     }).sort((a, b) =>
       PRIORITY_ORDER[a.highestPriority] - PRIORITY_ORDER[b.highestPriority] ||
@@ -181,7 +233,7 @@ export default function Dashboard() {
 
   // ── 무한 스크롤 ───────────────────────────────────────────────
   useEffect(() => { setVisibleCount(PAGE_SIZE); setSelectedIds(new Set()) },
-    [search, filterPriority, filterStatus, filterStore, cardFilter])
+    [search, filterPriority, filterStatus, filterStore, cardFilter, filterSeason])
 
   const loadMore = useCallback(() => {
     setVisibleCount((p) => Math.min(p + PAGE_SIZE, productGroups.length))
@@ -281,6 +333,33 @@ export default function Dashboard() {
           onClick={() => toggleCardFilter('completed')} />
       </div>
 
+      {/* 히트맵 토글 버튼 */}
+      {hasData && (
+        <button
+          onClick={() => setShowHeatmap((v) => !v)}
+          className={cn(
+            'flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-xl border transition-colors w-full sm:w-auto',
+            showHeatmap
+              ? 'bg-brand-50 text-brand-700 border-brand-200'
+              : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+          )}
+        >
+          <LayoutGrid className="w-3.5 h-3.5" />
+          매장 × 상품 히트맵
+          <ChevronDown className={cn('w-3 h-3 transition-transform ml-auto sm:ml-0', showHeatmap && 'rotate-180')} />
+        </button>
+      )}
+
+      {/* 히트맵 */}
+      {showHeatmap && hasData && (
+        <StoreHeatmap
+          recallItems={recallItems}
+          stores={stores}
+          storeStocks={storeStocks}
+          products={products}
+        />
+      )}
+
       {/* 알림 결과 토스트 */}
       {sendResult && (
         <div className={cn('flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium border',
@@ -302,6 +381,19 @@ export default function Dashboard() {
                 placeholder="상품코드, 상품명, 매장명..."
                 className="w-full pl-8 pr-3 h-8 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:bg-white transition-colors" />
             </div>
+            {/* 시즌 필터 토글 */}
+            <button
+              onClick={() => setFilterSeason((f) => f === 'current' ? 'all' : 'current')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 h-8 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap',
+                filterSeason === 'current'
+                  ? 'border-cyan-300 bg-cyan-50 text-cyan-700 font-semibold'
+                  : 'border-gray-200 text-gray-400 hover:bg-gray-50 line-through'
+              )}
+            >
+              <span>{filterSeason === 'current' ? '🌸' : '❄️'}</span>
+              {filterSeason === 'current' ? `${getCurrentSeasonLabel()} 시즌만` : '전체 시즌'}
+            </button>
             <button onClick={() => setShowFilters(!showFilters)}
               className={cn('flex items-center gap-1.5 px-3 h-8 text-xs font-medium rounded-lg border transition-colors',
                 showFilters ? 'border-brand-300 bg-brand-50 text-brand-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50')}>
@@ -429,6 +521,23 @@ export default function Dashboard() {
   )
 }
 
+// ─── Sell-Through 게이지 바 ──────────────────────────────────────
+function SellThroughBar({ pct, size = 'sm' }: { pct: number | null; size?: 'sm' | 'xs' }) {
+  if (pct === null) return null
+  const color = pct >= 70 ? 'bg-green-400' : pct >= 40 ? 'bg-yellow-400' : 'bg-red-400'
+  const textColor = pct >= 70 ? 'text-green-600' : pct >= 40 ? 'text-yellow-600' : 'text-red-500'
+  return (
+    <div className={cn('flex items-center gap-1.5', size === 'xs' ? 'w-20' : 'w-24')}>
+      <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+        <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${Math.min(pct, 100)}%` }} />
+      </div>
+      <span className={cn('font-semibold tabular-nums flex-shrink-0', textColor, size === 'xs' ? 'text-[10px]' : 'text-[11px]')}>
+        {pct}%
+      </span>
+    </div>
+  )
+}
+
 // ─── 상품 그룹 행 ─────────────────────────────────────────────────
 function ProductGroupRow({
   group, expanded, onToggle, selectedIds, onGroupCheck, onItemCheck, onItemAction, onRevert, storeStocks, centerStocks, getStore,
@@ -445,9 +554,23 @@ function ProductGroupRow({
   centerStocks: ReturnType<typeof useAppStore.getState>['centerStocks']
   getStore: ReturnType<typeof useAppStore.getState>['getStore']
 }) {
+  const { periodSales } = useAppStore()
   const groupIds = group.recalls.map((r) => r.id)
   const allSelected = groupIds.length > 0 && groupIds.every((id) => selectedIds.has(id))
   const someSelected = groupIds.some((id) => selectedIds.has(id))
+
+  // ── Sell-Through 계산 (오프라인 기간합산 판매 / (판매 + 잔여재고)) ──
+  const sellThrough = useMemo(() => {
+    const skuSet = new Set(group.skuIds)
+    const totalStoreQty = storeStocks
+      .filter((s) => skuSet.has(s.productId))
+      .reduce((sum, s) => sum + s.qty, 0)
+    const totalSold = periodSales
+      .filter((p) => p.channel === 'offline' && skuSet.has(p.productId))
+      .reduce((sum, p) => sum + p.totalQty, 0)
+    if (totalSold + totalStoreQty === 0) return null
+    return Math.round((totalSold / (totalSold + totalStoreQty)) * 100)
+  }, [group.skuIds, storeStocks, periodSales])
 
   return (
     <div className={cn('border-b border-gray-50 last:border-0', expanded && 'bg-orange-50/20')}>
@@ -479,15 +602,34 @@ function ProductGroupRow({
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-semibold text-gray-900 truncate">{group.productName}</span>
             <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{group.skuIds.length}종 SKU</span>
+            {/* 시즌 배지 */}
+            {group.seasonLabel && (
+              <span className={cn(
+                'text-[10px] font-bold px-1.5 py-0.5 rounded-full border',
+                group.seasonType === 'SS'
+                  ? 'bg-cyan-50 text-cyan-600 border-cyan-100'
+                  : group.seasonType === 'FW'
+                  ? 'bg-indigo-50 text-indigo-600 border-indigo-100'
+                  : 'bg-gray-50 text-gray-500 border-gray-200'
+              )}>
+                {group.seasonType === 'SS' ? '🌸' : group.seasonType === 'FW' ? '❄️' : '🍃'} {group.seasonLabel}
+              </span>
+            )}
             {group.urgentCount > 0 && (
               <span className="flex items-center gap-1 text-[10px] font-bold bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">
                 <AlertTriangle className="w-2.5 h-2.5" />긴급 {group.urgentCount}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-3 mt-0.5">
-            <span className={cn('w-1.5 h-1.5 rounded-full inline-block', PRIORITY_DOT[group.highestPriority])} />
+          <div className="flex items-center gap-3 mt-1">
+            <span className={cn('w-1.5 h-1.5 rounded-full inline-block flex-shrink-0', PRIORITY_DOT[group.highestPriority])} />
             <span className="text-[11px] text-gray-400">{group.activeCount}건 회수대상</span>
+            {sellThrough !== null && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-gray-300">ST</span>
+                <SellThroughBar pct={sellThrough} size="sm" />
+              </div>
+            )}
           </div>
         </div>
 
@@ -549,9 +691,17 @@ function SkuSection({
   onRevert: (id: string) => void
   getStore: ReturnType<typeof useAppStore.getState>['getStore']
 }) {
-  const { getProduct, updateRecallStatus } = useAppStore()
+  const { getProduct, updateRecallStatus, periodSales } = useAppStore()
   const product = getProduct(skuId)
   const centerQty = centerStocks.find((c) => c.productId === skuId)?.qty ?? 0
+
+  // SKU sell-through (오프라인 판매 / (판매 + 매장 잔여재고))
+  const skuSellThrough = useMemo(() => {
+    const totalStoreQty = storeStocks.filter((s) => s.productId === skuId).reduce((s, ss) => s + ss.qty, 0)
+    const totalSold = periodSales.filter((p) => p.channel === 'offline' && p.productId === skuId).reduce((s, p) => s + p.totalQty, 0)
+    if (totalSold + totalStoreQty === 0) return null
+    return Math.round((totalSold / (totalSold + totalStoreQty)) * 100)
+  }, [skuId, storeStocks, periodSales])
 
   // 재고 있는 매장 + 회수 대상 매장 모두 포함
   const skuStoreStocks = storeStocks.filter((s) => s.productId === skuId && s.qty > 0)
@@ -574,8 +724,8 @@ function SkuSection({
     <div className="ml-14 mr-4 my-2 rounded-xl border border-gray-100 overflow-hidden">
       {/* SKU 헤더 */}
       <div className="flex items-center gap-3 px-3 py-2 bg-gray-50/80 border-b border-gray-100">
-        <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-600">
-          <Package className="w-3.5 h-3.5 text-gray-400" />
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 flex-1 min-w-0">
+          <Package className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
           {(() => {
             const optionLabel = [product?.color, product?.size].filter(Boolean).join(' / ')
             return optionLabel ? (
@@ -587,8 +737,14 @@ function SkuSection({
               <span className="font-mono text-gray-700">{skuId}</span>
             )
           })()}
+          {skuSellThrough !== null && (
+            <div className="flex items-center gap-1 ml-2">
+              <span className="text-[10px] text-gray-300 font-normal">ST</span>
+              <SellThroughBar pct={skuSellThrough} size="xs" />
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-1 ml-auto">
+        <div className="flex items-center gap-1 flex-shrink-0">
           <Warehouse className="w-3 h-3 text-gray-400" />
           <span className="text-xs text-gray-500">센터재고</span>
           <span className={cn('text-xs font-bold ml-1', centerQty === 0 ? 'text-red-500' : 'text-gray-800')}>
@@ -725,16 +881,176 @@ function SkuSection({
   )
 }
 
+// ─── 매장 × 상품 히트맵 ──────────────────────────────────────────
+function StoreHeatmap({
+  recallItems, stores, storeStocks, products,
+}: {
+  recallItems: RecallItem[]
+  stores: ReturnType<typeof useAppStore.getState>['stores']
+  storeStocks: ReturnType<typeof useAppStore.getState>['storeStocks']
+  products: ReturnType<typeof useAppStore.getState>['products']
+}) {
+  // 활성 회수 항목만 (받은 것, 취소된 것 제외)
+  const active = recallItems.filter((r) => r.status !== 'received' && r.status !== 'cancelled')
+  if (active.length === 0) return null
+
+  // 상위 상품 (PKU 기준, 긴급→높음→많은 건수 순)
+  type PkuMeta = { name: string; skuIds: string[]; minPriority: number; count: number }
+  const pkuMap = new Map<string, PkuMeta>()
+  for (const r of active) {
+    const p = products.find((x) => x.id === r.productId)
+    const name = p?.name ?? r.productId
+    const prev = pkuMap.get(name) ?? { name, skuIds: [], minPriority: 3, count: 0 }
+    if (!prev.skuIds.includes(r.productId)) prev.skuIds.push(r.productId)
+    pkuMap.set(name, {
+      ...prev,
+      minPriority: Math.min(prev.minPriority, PRIORITY_ORDER[r.priority]),
+      count: prev.count + 1,
+    })
+  }
+  const topPkus = [...pkuMap.values()]
+    .sort((a, b) => a.minPriority - b.minPriority || b.count - a.count)
+    .slice(0, 10)
+
+  // 회수 대상 매장 (긴급 건수 많은 순)
+  const recallStoreIds = new Set(active.map((r) => r.storeId))
+  const relevantStores = stores
+    .filter((s) => recallStoreIds.has(s.id))
+    .sort((a, b) => {
+      const aU = active.filter((r) => r.storeId === a.id && r.priority === 'urgent').length
+      const bU = active.filter((r) => r.storeId === b.id && r.priority === 'urgent').length
+      return bU - aU || active.filter((r) => r.storeId === b.id).length - active.filter((r) => r.storeId === a.id).length
+    })
+
+  type CellState = RecallPriority | 'none' | 'empty'
+  const CELL: Record<CellState, { bg: string; text: string; label: string }> = {
+    urgent: { bg: 'bg-red-100 border-red-200',     text: 'text-red-600 font-bold',     label: '긴급' },
+    high:   { bg: 'bg-orange-100 border-orange-200', text: 'text-orange-600 font-semibold', label: '높음' },
+    medium: { bg: 'bg-yellow-100 border-yellow-200', text: 'text-yellow-700',           label: '보통' },
+    low:    { bg: 'bg-sky-50 border-sky-100',       text: 'text-sky-600',               label: '낮음' },
+    none:   { bg: 'bg-green-50 border-green-100',   text: 'text-green-500',             label: '양호' },
+    empty:  { bg: 'bg-gray-50 border-gray-100',     text: 'text-gray-300',              label: '—' },
+  }
+
+  function getCell(storeId: string, skuIds: string[]): CellState {
+    const hasStock = skuIds.some((id) =>
+      storeStocks.some((s) => s.storeId === storeId && s.productId === id && s.qty > 0)
+    )
+    if (!hasStock) return 'empty'
+    const recalls = active.filter((r) => r.storeId === storeId && skuIds.includes(r.productId))
+    if (recalls.length === 0) return 'none'
+    const minP = Math.min(...recalls.map((r) => PRIORITY_ORDER[r.priority]))
+    return (['urgent', 'high', 'medium', 'low'] as RecallPriority[])[minP]
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+      {/* 헤더 */}
+      <div className="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <LayoutGrid className="w-4 h-4 text-brand-400" />
+          <span className="text-sm font-semibold text-gray-800">매장 × 상품 회수 현황</span>
+          <span className="text-xs text-gray-400">
+            상위 {topPkus.length}개 상품 · {relevantStores.length}개 매장
+          </span>
+        </div>
+        <div className="ml-auto flex items-center gap-3 text-[10px] text-gray-400 flex-wrap">
+          {(['urgent', 'high', 'medium', 'low', 'none'] as const).map((s) => (
+            <span key={s} className="flex items-center gap-1">
+              <span className={cn('w-2.5 h-2.5 rounded border inline-block', CELL[s].bg)} />
+              {CELL[s].label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* 히트맵 테이블 */}
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-xs border-collapse">
+          <thead>
+            <tr className="bg-gray-50/70 border-b border-gray-100">
+              <th className="sticky left-0 z-10 bg-gray-50/90 text-left px-4 py-2.5 text-[11px] font-semibold text-gray-500 min-w-[100px] whitespace-nowrap">
+                매장
+              </th>
+              {topPkus.map((p) => (
+                <th key={p.name} className="px-2 py-2 text-center min-w-[68px]">
+                  <div
+                    className="text-[10px] font-medium text-gray-500 truncate max-w-[64px] mx-auto"
+                    title={p.name}
+                  >
+                    {p.name.length > 7 ? p.name.slice(0, 7) + '…' : p.name}
+                  </div>
+                </th>
+              ))}
+              <th className="px-3 py-2 text-right text-[10px] font-normal text-gray-400 min-w-[52px] whitespace-nowrap">
+                회수건수
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {relevantStores.map((store) => {
+              const storeCount = active.filter((r) => r.storeId === store.id).length
+              return (
+                <tr
+                  key={store.id}
+                  className="border-b border-gray-50 last:border-0 hover:bg-gray-50/40 transition-colors"
+                >
+                  <td className="sticky left-0 z-10 bg-white px-4 py-1.5 text-[12px] text-gray-700 font-medium whitespace-nowrap border-r border-gray-50">
+                    {store.name}
+                  </td>
+                  {topPkus.map((p) => {
+                    const state = getCell(store.id, p.skuIds)
+                    const c = CELL[state]
+                    const tooltipText = state !== 'empty'
+                      ? `${store.name} · ${p.name}\n→ ${c.label}`
+                      : ''
+                    return (
+                      <td key={p.name} className="px-1 py-1">
+                        <Tooltip content={tooltipText}>
+                          <div className={cn(
+                            'mx-auto rounded-lg border text-center py-1 w-14 text-[10px] leading-none',
+                            c.bg, c.text
+                          )}>
+                            {c.label}
+                          </div>
+                        </Tooltip>
+                      </td>
+                    )
+                  })}
+                  <td className="px-3 py-1.5 text-right">
+                    <span className={cn(
+                      'text-[11px] font-semibold tabular-nums',
+                      storeCount >= 5 ? 'text-red-500' : storeCount >= 3 ? 'text-orange-500' : 'text-gray-500'
+                    )}>
+                      {storeCount}건
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* 범례 설명 */}
+      <div className="px-4 py-2 border-t border-gray-50 text-[10px] text-gray-400">
+        재고 없음 = 셀 없음(—) · 재고 있고 회수불필요 = 양호(초록) · 회수대상 = 우선순위 색상
+      </div>
+    </div>
+  )
+}
+
 // helper for type inference
 const buildGroup = (g: {
   key: string; productName: string; imageUrl?: string; skuIds: string[]; recalls: RecallItem[]
   highestPriority: RecallPriority; urgentCount: number; highCount: number
   totalRecallQty: number; storeCount: number; activeCount: number
+  seasonType: 'SS' | 'FW' | null; seasonLabel: string; seasonInferred: boolean
 }) => g
 
 // ─── 데이터 현황 패널 ────────────────────────────────────────────
 function DataStatusPanel() {
-  const { centerStocks, storeStocks, periodSales, stores, products } = useAppStore()
+  const { centerStocks, storeStocks, periodSales, stores, products, settings } = useAppStore()
   const hasCenter = centerStocks.length > 0
   const hasStore = storeStocks.length > 0
   const onlineSales = periodSales.filter((p) => p.channel === 'online')
@@ -744,6 +1060,16 @@ function DataStatusPanel() {
   const hasCoupang = coupangSales.length > 0
   const hasOffline = offlineSales.length > 0
   const hasAnySales = hasOnline || hasCoupang
+
+  const today = new Date()
+  const seasonLabel = getCurrentSeasonLabel(today)
+  const todayStr = today.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
+
+  // 시즌 종료까지 남은 일수
+  const seasonEndDate = new Date(settings.seasonEndDate)
+  const remainDays = Math.max(0, Math.ceil((seasonEndDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)))
+  const isSeasonUrgent = remainDays <= 30
+  const isSeasonSoon = remainDays <= 60
 
   const items = [
     { label: '센터재고', ok: hasCenter, detail: hasCenter ? `${products.length.toLocaleString()}종` : null, required: true },
@@ -758,7 +1084,21 @@ function DataStatusPanel() {
     <div className={cn('rounded-2xl border px-4 py-3',
       allOk ? 'bg-white border-gray-100' : !hasAnySales && (hasCenter || hasStore) ? 'bg-amber-50 border-amber-100' : 'bg-white border-gray-100')}>
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1.5 mr-1">
+        {/* 시즌 배지 */}
+        <div className={cn('flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full font-semibold border mr-1',
+          isSeasonUrgent ? 'bg-red-50 text-red-600 border-red-100'
+          : isSeasonSoon ? 'bg-orange-50 text-orange-600 border-orange-100'
+          : 'bg-brand-50 text-brand-700 border-brand-100')}>
+          <CalendarDays className="w-3 h-3 flex-shrink-0" />
+          <span>{todayStr}</span>
+          <span className="opacity-50">·</span>
+          <span>{seasonLabel}</span>
+          {remainDays > 0 && (
+            <span className="opacity-70">· 시즌 {remainDays}일 남음</span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5">
           <Layers className="w-3.5 h-3.5 text-gray-400" />
           <span className="text-xs font-semibold text-gray-500">데이터 현황</span>
         </div>

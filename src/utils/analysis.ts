@@ -1,5 +1,6 @@
 import { differenceInDays, parseISO, subDays } from 'date-fns'
 import type {
+  Product,
   SaleRecord,
   PeriodSaleAggregate,
   CenterStock,
@@ -8,6 +9,50 @@ import type {
   RecallPriority,
   AppSettings,
 } from '../types'
+
+// ─── 시즌 유틸 ──────────────────────────────────────────────────────
+/**
+ * 상품 시즌 문자열에서 SS/FW 구분 추출
+ * 영문: "2025FW" → "FW", "2026SS" → "SS"
+ * 한글: "겨울" → "FW", "여름" → "SS", "봄/가을" → null (양 시즌 표시)
+ */
+export function getProductSeasonType(season: string | undefined): 'SS' | 'FW' | null {
+  if (!season?.trim()) return null
+  const s = season.trim()
+  const upper = s.toUpperCase()
+
+  // ── 영문 코드 ──
+  if (upper.includes('SS') || upper.includes('SP') || upper.includes('SU')) return 'SS'
+  if (upper.includes('FW') || upper.includes('FA') || upper.includes('AU') || upper.includes('WI')) return 'FW'
+
+  // ── 한글 시즌 값 (이지어드민: 봄, 여름, 가을, 겨울, 봄/가을, 사계절 등) ──
+  if (s.includes('사계절')) return null      // 연중 상품 → 필터 안 함
+  const isSS = s.includes('봄') || s.includes('여름')      // Spring / Summer
+  const isFW = s.includes('가을') || s.includes('겨울')    // Fall / Winter
+  if (isSS && !isFW) return 'SS'
+  if (isFW && !isSS) return 'FW'
+  return null  // 봄/가을(혼합) or 미인식 → 항상 표시
+}
+
+/**
+ * 오늘 날짜 기준 현재 시즌 계산
+ * SS: 3~8월 / FW: 9~2월
+ */
+export function getCurrentSeason(date: Date = new Date()): 'SS' | 'FW' {
+  const month = date.getMonth() + 1 // 1–12
+  return month >= 3 && month <= 8 ? 'SS' : 'FW'
+}
+
+/**
+ * 시즌 라벨 (e.g., "2026 SS")
+ */
+export function getCurrentSeasonLabel(date: Date = new Date()): string {
+  const season = getCurrentSeason(date)
+  const year = date.getFullYear()
+  // FW는 해가 걸쳐 있어서 9~12월은 당해 년도, 1~2월은 전년도 FW
+  const fwYear = date.getMonth() + 1 <= 2 ? year - 1 : year
+  return season === 'SS' ? `${year} SS` : `${fwYear} FW`
+}
 
 // ─── 유틸 ──────────────────────────────────────────────────────
 function clamp(v: number, min = 0, max = 1) {
@@ -162,13 +207,15 @@ export function calcSuggestedQty(params: {
   centerStock: number
   storeStock: number
   remainingSeasonDays: number
+  maxQty?: number  // SKU당 최대 회수 수량 (기본 5)
 }): number {
-  const { onlineVelocity, centerStock, storeStock, remainingSeasonDays } = params
+  const { onlineVelocity, centerStock, storeStock, remainingSeasonDays, maxQty = 5 } = params
   if (storeStock === 0) return 0
   const remaining = Math.max(0, remainingSeasonDays)
   const expectedTotalOnlineDemand = onlineVelocity * remaining
   const unmetDemand = Math.max(0, expectedTotalOnlineDemand - centerStock)
-  return Math.min(storeStock, Math.ceil(unmetDemand))
+  const raw = Math.min(storeStock, Math.ceil(unmetDemand))
+  return Math.min(raw, maxQty)
 }
 
 // ─── 우선순위 레이블 ────────────────────────────────────────────
@@ -186,14 +233,23 @@ export function generateRecommendations(params: {
   centerStocks: CenterStock[]
   storeStocks: StoreStock[]
   settings: AppSettings
+  products?: Product[]
   referenceDate?: Date
 }): RecallRecommendation[] {
-  const { sales, periodSales = [], centerStocks, storeStocks, settings, referenceDate = new Date() } = params
+  const { sales, periodSales = [], centerStocks, storeStocks, settings, products = [], referenceDate = new Date() } = params
   const { analysisWindowDays, weights } = settings
+  const maxQty = settings.maxRecallQtyPerSku ?? 5
   const remainingSeasonDays = differenceInDays(
     parseISO(settings.seasonEndDate),
     referenceDate
   )
+
+  // 현재 시즌 (SS or FW) — 시즌이 없는 상품은 항상 포함
+  const currentSeason = getCurrentSeason(referenceDate)
+  const productSeasonMap = new Map<string, 'SS' | 'FW' | null>()
+  for (const p of products) {
+    productSeasonMap.set(p.id, getProductSeasonType(p.season))
+  }
 
   // 재고가 있는 매장-상품 조합만 처리
   const stockMap = new Map<string, StoreStock>()
@@ -223,6 +279,11 @@ export function generateRecommendations(params: {
 
   for (const [key, storeStock] of stockMap) {
     const [storeId, productId] = key.split('__')
+
+    // ── 시즌 필터: 다른 시즌 상품은 제외 ──────────────────────────
+    const productSeason = productSeasonMap.get(productId)
+    if (productSeason !== null && productSeason !== undefined && productSeason !== currentSeason) continue
+
     const centerStock = centerMap.get(productId) ?? 0
     const onlineVelocity = velocityMap.get(productId) ?? 0
     const storeVelocity = calcVelocity(
@@ -256,6 +317,7 @@ export function generateRecommendations(params: {
       centerStock,
       storeStock: storeStock.qty,
       remainingSeasonDays,
+      maxQty,
     })
 
     if (suggestedQty === 0) continue

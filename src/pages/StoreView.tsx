@@ -14,8 +14,25 @@ const PRIORITY_DOT: Record<RecallPriority, string> = {
   urgent: 'bg-red-500', high: 'bg-orange-400', medium: 'bg-yellow-400', low: 'bg-gray-300',
 }
 
+// ─── Sell-Through 게이지 바 ──────────────────────────────────────
+function SellThroughBar({ pct, size = 'sm' }: { pct: number | null; size?: 'sm' | 'xs' }) {
+  if (pct === null) return null
+  const color = pct >= 70 ? 'bg-green-400' : pct >= 40 ? 'bg-yellow-400' : 'bg-red-400'
+  const textColor = pct >= 70 ? 'text-green-600' : pct >= 40 ? 'text-yellow-600' : 'text-red-500'
+  return (
+    <div className={cn('flex items-center gap-1.5', size === 'xs' ? 'w-20' : 'w-24')}>
+      <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+        <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${Math.min(pct, 100)}%` }} />
+      </div>
+      <span className={cn('font-semibold tabular-nums flex-shrink-0', textColor, size === 'xs' ? 'text-[10px]' : 'text-[11px]')}>
+        {pct}%
+      </span>
+    </div>
+  )
+}
+
 export default function StoreView() {
-  const { products, storeStocks, stores, centerStocks, recallItems, getStore, updateRecallStatus } = useAppStore()
+  const { products, storeStocks, stores, centerStocks, recallItems, periodSales, getStore, updateRecallStatus } = useAppStore()
   const [search, setSearch] = useState('')
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set())
   const [selectedItem, setSelectedItem] = useState<RecallItem | null>(null)
@@ -42,6 +59,7 @@ export default function StoreView() {
         centerQty: number
         myRecalls: RecallItem[]
         urgentCount: number
+        sellThrough: number | null
       }>
     }>()
 
@@ -58,7 +76,12 @@ export default function StoreView() {
         (r) => r.productId === product.id && r.status !== 'received' && r.status !== 'cancelled'
       )
       const urgentCount = myRecalls.filter((r) => r.priority === 'urgent').length
-      map.get(key)!.skus.push({ product, myStocks, totalStoreQty, centerQty, myRecalls, urgentCount })
+
+      // SKU sell-through
+      const soldQty = periodSales.filter((p) => p.channel === 'offline' && p.productId === product.id).reduce((s, p) => s + p.totalQty, 0)
+      const sellThrough = soldQty + totalStoreQty === 0 ? null : Math.round((soldQty / (soldQty + totalStoreQty)) * 100)
+
+      map.get(key)!.skus.push({ product, myStocks, totalStoreQty, centerQty, myRecalls, urgentCount, sellThrough })
     }
 
     return Array.from(map.values())
@@ -68,7 +91,10 @@ export default function StoreView() {
         const urgentCount = g.skus.reduce((s, sku) => s + sku.urgentCount, 0)
         const hasRecall = totalRecalls > 0
         const storeIds = new Set(g.skus.flatMap((sku) => sku.myStocks.map((s) => s.storeId)))
-        return { ...g, totalStoreQty, totalRecalls, urgentCount, hasRecall, storeCount: storeIds.size }
+        // 그룹 전체 ST% (유효한 SKU만 평균)
+        const validSTs = g.skus.map((sku) => sku.sellThrough).filter((v): v is number => v !== null)
+        const groupSellThrough = validSTs.length > 0 ? Math.round(validSTs.reduce((s, v) => s + v, 0) / validSTs.length) : null
+        return { ...g, totalStoreQty, totalRecalls, urgentCount, hasRecall, storeCount: storeIds.size, groupSellThrough }
       })
       .filter((g) => filterMode === 'all' || g.hasRecall)
       .filter((g) => {
@@ -80,7 +106,7 @@ export default function StoreView() {
         )
       })
       .sort((a, b) => b.urgentCount - a.urgentCount || b.totalRecalls - a.totalRecalls)
-  }, [products, storeStocks, centerStocks, recallItems, search, filterMode, stockedProductIds])
+  }, [products, storeStocks, centerStocks, recallItems, periodSales, search, filterMode, stockedProductIds])
 
   // ── 무한 스크롤 ───────────────────────────────────────────────
   useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, filterMode])
@@ -193,12 +219,20 @@ export default function StoreView() {
                         </span>
                       )}
                     </div>
-                    <div className="text-[11px] text-gray-400 mt-0.5">
-                      {group.totalRecalls > 0
-                        ? <span className="text-brand-500 font-medium">{group.totalRecalls}건 회수대상</span>
-                        : '회수 불필요'}
-                      <span className="mx-1.5 text-gray-200">·</span>
-                      {group.storeCount}개 매장
+                    <div className="flex items-center gap-3 mt-1 flex-wrap">
+                      <span className="text-[11px] text-gray-400">
+                        {group.totalRecalls > 0
+                          ? <span className="text-brand-500 font-medium">{group.totalRecalls}건 회수대상</span>
+                          : '회수 불필요'}
+                        <span className="mx-1.5 text-gray-200">·</span>
+                        {group.storeCount}개 매장
+                      </span>
+                      {group.groupSellThrough !== null && (
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px] text-gray-300">ST</span>
+                          <SellThroughBar pct={group.groupSellThrough} size="sm" />
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -224,7 +258,7 @@ export default function StoreView() {
                 {/* ── 펼쳐진 SKU별 상세 ── */}
                 {isExpanded && (
                   <div className="border-t border-gray-100 divide-y divide-gray-50">
-                    {group.skus.map(({ product, myStocks, totalStoreQty, centerQty, myRecalls }) => {
+                    {group.skus.map(({ product, myStocks, totalStoreQty, centerQty, myRecalls, sellThrough }) => {
                       const optionLabel = [product.color, product.size].filter(Boolean).join(' / ')
                       // 회수 대상 매장 먼저, 그다음 재고 많은 순
                       const sortedStocks = [...myStocks].sort((a, b) => {
@@ -237,7 +271,7 @@ export default function StoreView() {
 
                       return (
                         <div key={product.id} className="ml-14 mr-4 my-3 rounded-xl border border-gray-100 overflow-hidden">
-                          {/* SKU 헤더: 옵션명 + 코드 + 센터재고 */}
+                          {/* SKU 헤더: 옵션명 + 코드 + ST% + 센터재고 */}
                           <div className="flex items-center gap-3 px-3 py-2 bg-gray-50/80 border-b border-gray-100">
                             <div className="flex items-center gap-1.5 text-xs flex-1 min-w-0">
                               <Package className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
@@ -248,6 +282,12 @@ export default function StoreView() {
                                 </>
                               ) : (
                                 <span className="font-mono text-gray-700">{product.id}</span>
+                              )}
+                              {sellThrough !== null && (
+                                <div className="flex items-center gap-1 ml-2">
+                                  <span className="text-[10px] text-gray-300 font-normal">ST</span>
+                                  <SellThroughBar pct={sellThrough} size="xs" />
+                                </div>
                               )}
                             </div>
                             <div className="flex items-center gap-1 flex-shrink-0">

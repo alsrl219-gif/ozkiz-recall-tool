@@ -131,6 +131,7 @@ export interface AppSettings {
   urgentScoreThreshold: number    // 긴급 기준 점수 (기본 80)
   highScoreThreshold: number      // 높음 기준 점수 (기본 60)
   mediumScoreThreshold: number    // 보통 기준 점수 (기본 40)
+  maxRecallQtyPerSku: number      // SKU당 최대 회수 수량 (기본 5)
   weights: {
     onlineDemand: number          // 온라인 수요 가중치 (기본 0.40)
     centerDepletion: number       // 센터 소진 가중치 (기본 0.35)
@@ -142,11 +143,12 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  seasonEndDate: '2025-06-30',
+  seasonEndDate: '2026-06-30',
   analysisWindowDays: 30,
   urgentScoreThreshold: 80,
   highScoreThreshold: 60,
   mediumScoreThreshold: 40,
+  maxRecallQtyPerSku: 5,
   weights: {
     onlineDemand: 0.40,
     centerDepletion: 0.35,
