@@ -29,7 +29,11 @@
       "Bash(/c/Users/User/AppData/Local/Microsoft/WindowsApps/python3.exe -c \"import sys; print\\(sys.version\\)\")",
       "Bash(echo \"Exit: $?\")",
       "Bash(node -e ':*)",
-      "Bash(where py:*)"
+      "Bash(where py:*)",
+      "WebFetch(domain:sellout.openhan.ai)",
+      "Bash(npx tsc:*)",
+      "Bash(python -c ':*)",
+      "Bash(npx playwright:*)"
     ]
   }
 }
