@@ -76,6 +76,18 @@ export default function Settings() {
             <span className="text-xs text-gray-400">개 / SKU · 매장</span>
           </div>
         </Field>
+        <Field label="SKU 매장 합산 재고 최솟값" hint="전체 매장 합산 재고가 이 값 미만인 SKU는 회수 대상에서 제외합니다 (기본 10개)">
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              value={form.minTotalStoreStock ?? 10}
+              min={1} max={200}
+              onChange={(e) => setForm((f) => ({ ...f, minTotalStoreStock: parseInt(e.target.value) || 10 }))}
+              className="input w-24"
+            />
+            <span className="text-xs text-gray-400">개 미만 SKU 제외</span>
+          </div>
+        </Field>
       </Section>
 
       {/* 우선순위 임계값 */}

@@ -239,6 +239,7 @@ export function generateRecommendations(params: {
   const { sales, periodSales = [], centerStocks, storeStocks, settings, products = [], referenceDate = new Date() } = params
   const { analysisWindowDays, weights } = settings
   const maxQty = settings.maxRecallQtyPerSku ?? 5
+  const minTotalStoreStock = settings.minTotalStoreStock ?? 10
   const remainingSeasonDays = differenceInDays(
     parseISO(settings.seasonEndDate),
     referenceDate
@@ -249,6 +250,12 @@ export function generateRecommendations(params: {
   const productSeasonMap = new Map<string, 'SS' | 'FW' | null>()
   for (const p of products) {
     productSeasonMap.set(p.id, getProductSeasonType(p.season))
+  }
+
+  // SKU별 전체 매장 합산 재고 (최솟값 필터용)
+  const totalStoreStockBySkuMap = new Map<string, number>()
+  for (const s of storeStocks) {
+    totalStoreStockBySkuMap.set(s.productId, (totalStoreStockBySkuMap.get(s.productId) ?? 0) + s.qty)
   }
 
   // 재고가 있는 매장-상품 조합만 처리
@@ -279,6 +286,10 @@ export function generateRecommendations(params: {
 
   for (const [key, storeStock] of stockMap) {
     const [storeId, productId] = key.split('__')
+
+    // ── SKU 총재고 최솟값 필터: 전체 매장 합산 재고가 너무 적으면 제외 ──
+    const totalStoreStockForSku = totalStoreStockBySkuMap.get(productId) ?? 0
+    if (totalStoreStockForSku < minTotalStoreStock) continue
 
     // ── 시즌 필터: 다른 시즌 상품은 제외 ──────────────────────────
     const productSeason = productSeasonMap.get(productId)

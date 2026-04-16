@@ -132,6 +132,7 @@ export interface AppSettings {
   highScoreThreshold: number      // 높음 기준 점수 (기본 60)
   mediumScoreThreshold: number    // 보통 기준 점수 (기본 40)
   maxRecallQtyPerSku: number      // SKU당 최대 회수 수량 (기본 5)
+  minTotalStoreStock: number      // SKU 매장 합산 재고 최소값 (기본 10, 미만 시 회수 제외)
   weights: {
     onlineDemand: number          // 온라인 수요 가중치 (기본 0.40)
     centerDepletion: number       // 센터 소진 가중치 (기본 0.35)
@@ -149,6 +150,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   highScoreThreshold: 60,
   mediumScoreThreshold: 40,
   maxRecallQtyPerSku: 5,
+  minTotalStoreStock: 10,
   weights: {
     onlineDemand: 0.40,
     centerDepletion: 0.35,
