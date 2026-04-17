@@ -1,7 +1,8 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import {
   Search, Package, ChevronDown, ChevronRight,
-  Store, AlertTriangle, CheckCircle2, ArrowRight, Warehouse,
+  Store, AlertTriangle, CheckCircle2, ArrowRight, Warehouse, LayoutList, LayoutGrid,
+  TrendingUp,
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { PriorityBadge, StatusBadge } from '../components/RecallPriorityBadge'
@@ -37,6 +38,7 @@ export default function StoreView() {
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set())
   const [selectedItem, setSelectedItem] = useState<RecallItem | null>(null)
   const [filterMode, setFilterMode] = useState<'all' | 'recall'>('all')
+  const [viewMode, setViewMode] = useState<'product' | 'store'>('product')
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const sentinelRef = useRef<HTMLDivElement>(null)
 
@@ -46,7 +48,7 @@ export default function StoreView() {
     [storeStocks]
   )
 
-  // ── PKU 그룹핑 ────────────────────────────────────────────────
+  // ── ① 상품별 PKU 그룹 ────────────────────────────────────────
   const pkuGroups = useMemo(() => {
     const map = new Map<string, {
       key: string
@@ -76,8 +78,6 @@ export default function StoreView() {
         (r) => r.productId === product.id && r.status !== 'received' && r.status !== 'cancelled'
       )
       const urgentCount = myRecalls.filter((r) => r.priority === 'urgent').length
-
-      // SKU sell-through
       const soldQty = periodSales.filter((p) => p.channel === 'offline' && p.productId === product.id).reduce((s, p) => s + p.totalQty, 0)
       const sellThrough = soldQty + totalStoreQty === 0 ? null : Math.round((soldQty / (soldQty + totalStoreQty)) * 100)
 
@@ -91,7 +91,6 @@ export default function StoreView() {
         const urgentCount = g.skus.reduce((s, sku) => s + sku.urgentCount, 0)
         const hasRecall = totalRecalls > 0
         const storeIds = new Set(g.skus.flatMap((sku) => sku.myStocks.map((s) => s.storeId)))
-        // 그룹 전체 ST% (유효한 SKU만 평균)
         const validSTs = g.skus.map((sku) => sku.sellThrough).filter((v): v is number => v !== null)
         const groupSellThrough = validSTs.length > 0 ? Math.round(validSTs.reduce((s, v) => s + v, 0) / validSTs.length) : null
         return { ...g, totalStoreQty, totalRecalls, urgentCount, hasRecall, storeCount: storeIds.size, groupSellThrough }
@@ -100,20 +99,116 @@ export default function StoreView() {
       .filter((g) => {
         if (!search) return true
         const q = search.toLowerCase()
-        return (
-          g.productName.toLowerCase().includes(q) ||
-          g.skus.some((sku) => sku.product.id.toLowerCase().includes(q))
-        )
+        return g.productName.toLowerCase().includes(q) || g.skus.some((sku) => sku.product.id.toLowerCase().includes(q))
       })
       .sort((a, b) => b.urgentCount - a.urgentCount || b.totalRecalls - a.totalRecalls)
   }, [products, storeStocks, centerStocks, recallItems, periodSales, search, filterMode, stockedProductIds])
 
+  // ── ② 매장별 그룹 ─────────────────────────────────────────────
+  const storeGroups = useMemo(() => {
+    type StoreItem = {
+      productId: string
+      productName: string
+      optionLabel: string
+      imageUrl?: string
+      qty: number
+      offlineSalesQty: number    // 기간 합산 오프라인 판매 수량 (상품 전체)
+      dailyVelocity: number      // 일평균 판매 속도
+      recall: RecallItem | undefined
+    }
+    type StoreGroup = {
+      storeId: string
+      storeName: string
+      items: StoreItem[]
+      totalQty: number
+      totalSalesQty: number
+      recallCount: number
+      urgentCount: number
+    }
+
+    const map = new Map<string, StoreGroup>()
+
+    // 오프라인 판매 데이터 캐시
+    const salesCache = new Map<string, { qty: number; velocity: number }>()
+    for (const p of periodSales) {
+      if (p.channel !== 'offline') continue
+      const cur = salesCache.get(p.productId) ?? { qty: 0, velocity: 0 }
+      salesCache.set(p.productId, {
+        qty: cur.qty + p.totalQty,
+        velocity: cur.velocity + p.dailyVelocity,
+      })
+    }
+
+    for (const stock of storeStocks) {
+      if (stock.qty <= 0) continue
+      const store = getStore(stock.storeId)
+      if (!map.has(stock.storeId)) {
+        map.set(stock.storeId, {
+          storeId: stock.storeId,
+          storeName: store?.name ?? stock.storeId,
+          items: [],
+          totalQty: 0,
+          totalSalesQty: 0,
+          recallCount: 0,
+          urgentCount: 0,
+        })
+      }
+      const g = map.get(stock.storeId)!
+      const product = products.find((p) => p.id === stock.productId)
+      const optionLabel = [product?.color, product?.size].filter(Boolean).join(' / ')
+      const sales = salesCache.get(stock.productId) ?? { qty: 0, velocity: 0 }
+      const recall = recallItems.find(
+        (r) => r.productId === stock.productId && r.storeId === stock.storeId
+          && r.status !== 'received' && r.status !== 'cancelled'
+      )
+
+      g.items.push({
+        productId: stock.productId,
+        productName: product?.name ?? stock.productId,
+        optionLabel,
+        imageUrl: product?.imageUrl,
+        qty: stock.qty,
+        offlineSalesQty: sales.qty,
+        dailyVelocity: sales.velocity,
+        recall,
+      })
+      g.totalQty += stock.qty
+      g.totalSalesQty += sales.qty
+      if (recall) {
+        g.recallCount++
+        if (recall.priority === 'urgent') g.urgentCount++
+      }
+    }
+
+    return Array.from(map.values())
+      .map((g) => ({
+        ...g,
+        // 재고 많은 순으로 아이템 정렬 (회수 대상 먼저)
+        items: [...g.items].sort((a, b) => {
+          if (a.recall && !b.recall) return -1
+          if (!a.recall && b.recall) return 1
+          return b.qty - a.qty
+        }),
+      }))
+      .filter((g) => filterMode === 'all' || g.recallCount > 0)
+      .filter((g) => {
+        if (!search) return true
+        const q = search.toLowerCase()
+        return (
+          g.storeName.toLowerCase().includes(q) ||
+          g.items.some((i) => i.productName.toLowerCase().includes(q) || i.productId.toLowerCase().includes(q))
+        )
+      })
+      .sort((a, b) => b.urgentCount - a.urgentCount || b.recallCount - a.recallCount || b.totalQty - a.totalQty)
+  }, [storeStocks, stores, products, periodSales, recallItems, search, filterMode, getStore])
+
   // ── 무한 스크롤 ───────────────────────────────────────────────
-  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, filterMode])
+  const currentList = viewMode === 'product' ? pkuGroups : storeGroups
+  useEffect(() => { setVisibleCount(PAGE_SIZE); setExpandedKeys(new Set()) }, [search, filterMode, viewMode])
 
   const loadMore = useCallback(() => {
-    setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, pkuGroups.length))
-  }, [pkuGroups.length])
+    setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, currentList.length))
+  }, [currentList.length])
 
   useEffect(() => {
     const el = sentinelRef.current
@@ -126,8 +221,8 @@ export default function StoreView() {
     return () => ob.disconnect()
   }, [loadMore])
 
-  const visibleGroups = pkuGroups.slice(0, visibleCount)
-  const hasMore = visibleCount < pkuGroups.length
+  const visibleGroups = currentList.slice(0, visibleCount)
+  const hasMore = visibleCount < currentList.length
 
   function toggleGroup(key: string) {
     setExpandedKeys((prev) => {
@@ -137,7 +232,6 @@ export default function StoreView() {
     })
   }
 
-  // 요약 통계
   const totalPku = pkuGroups.length
   const recallPku = pkuGroups.filter((g) => g.hasRecall).length
 
@@ -150,17 +244,46 @@ export default function StoreView() {
         <SummaryCard label="전체 매장" value={stores.length} sub="등록된 매장" color="text-gray-700" />
       </div>
 
-      {/* 검색 + 필터 */}
-      <div className="flex gap-2">
+      {/* 뷰 모드 탭 + 검색 + 필터 */}
+      <div className="flex flex-col sm:flex-row gap-2">
+        {/* 뷰 모드 토글 */}
+        <div className="flex rounded-xl border border-gray-200 bg-white overflow-hidden flex-shrink-0">
+          <button
+            onClick={() => setViewMode('product')}
+            className={cn(
+              'flex items-center gap-1.5 px-3 h-9 text-xs font-semibold transition-colors',
+              viewMode === 'product'
+                ? 'bg-brand-500 text-white'
+                : 'text-gray-500 hover:bg-gray-50'
+            )}
+          >
+            <LayoutList className="w-3.5 h-3.5" />상품별
+          </button>
+          <button
+            onClick={() => setViewMode('store')}
+            className={cn(
+              'flex items-center gap-1.5 px-3 h-9 text-xs font-semibold transition-colors border-l border-gray-200',
+              viewMode === 'store'
+                ? 'bg-brand-500 text-white'
+                : 'text-gray-500 hover:bg-gray-50'
+            )}
+          >
+            <LayoutGrid className="w-3.5 h-3.5" />매장별
+          </button>
+        </div>
+
+        {/* 검색 */}
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="상품명 또는 SKU 코드 검색..."
+            placeholder={viewMode === 'product' ? '상품명 또는 SKU 코드 검색...' : '매장명 또는 상품명 검색...'}
             className="w-full pl-8 pr-3 h-9 text-sm border border-gray-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-brand-300"
           />
         </div>
+
+        {/* 회수 대상 필터 */}
         <button
           onClick={() => setFilterMode(filterMode === 'all' ? 'recall' : 'all')}
           className={cn(
@@ -174,247 +297,384 @@ export default function StoreView() {
         </button>
       </div>
 
-      {/* PKU 목록 */}
-      {pkuGroups.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
-          <Package className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-          <p className="text-sm text-gray-500">
-            {stockedProductIds.size === 0
-              ? '이지체인 매장 재고 데이터를 먼저 업로드하세요'
-              : '검색 결과가 없습니다'}
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {visibleGroups.map((group) => {
-            const isExpanded = expandedKeys.has(group.key)
-            return (
-              <div key={group.key} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-                {/* ── PKU 헤더 ── */}
-                <button
-                  onClick={() => toggleGroup(group.key)}
-                  className="w-full flex items-center gap-4 px-4 py-3.5 hover:bg-gray-50/60 transition-colors text-left"
-                >
-                  {/* 이미지 */}
-                  {group.imageUrl ? (
-                    <img src={group.imageUrl} alt=""
-                      className="w-10 h-10 rounded-xl object-cover flex-shrink-0 bg-gray-100"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
-                  ) : (
-                    <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0">
-                      <Package className="w-4 h-4 text-gray-400" />
-                    </div>
-                  )}
-
-                  {/* 상품명 */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-semibold text-gray-900 truncate">{group.productName}</span>
-                      <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">
-                        {group.skus.length}종
-                      </span>
-                      {group.urgentCount > 0 && (
-                        <span className="flex items-center gap-1 text-[10px] font-bold bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">
-                          <AlertTriangle className="w-2.5 h-2.5" />긴급 {group.urgentCount}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 mt-1 flex-wrap">
-                      <span className="text-[11px] text-gray-400">
-                        {group.totalRecalls > 0
-                          ? <span className="text-brand-500 font-medium">{group.totalRecalls}건 회수대상</span>
-                          : '회수 불필요'}
-                        <span className="mx-1.5 text-gray-200">·</span>
-                        {group.storeCount}개 매장
-                      </span>
-                      {group.groupSellThrough !== null && (
-                        <div className="flex items-center gap-1">
-                          <span className="text-[10px] text-gray-300">ST</span>
-                          <SellThroughBar pct={group.groupSellThrough} size="sm" />
+      {/* ── 상품별 뷰 ─────────────────────────────────────────────── */}
+      {viewMode === 'product' && (
+        <>
+          {pkuGroups.length === 0 ? (
+            <EmptyState hasData={stockedProductIds.size > 0} />
+          ) : (
+            <div className="space-y-2">
+              {(visibleGroups as typeof pkuGroups).map((group) => {
+                const isExpanded = expandedKeys.has(group.key)
+                return (
+                  <div key={group.key} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                    <button
+                      onClick={() => toggleGroup(group.key)}
+                      className="w-full flex items-center gap-4 px-4 py-3.5 hover:bg-gray-50/60 transition-colors text-left"
+                    >
+                      {group.imageUrl ? (
+                        <img src={group.imageUrl} alt=""
+                          className="w-10 h-10 rounded-xl object-cover flex-shrink-0 bg-gray-100"
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                      ) : (
+                        <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0">
+                          <Package className="w-4 h-4 text-gray-400" />
                         </div>
                       )}
-                    </div>
-                  </div>
-
-                  {/* 재고 요약 */}
-                  <div className="hidden sm:flex items-center gap-5 text-center flex-shrink-0">
-                    <div>
-                      <div className="text-sm font-bold text-gray-900 tabular-nums">{formatNumber(group.totalStoreQty)}</div>
-                      <div className="text-[10px] text-gray-400">매장 재고</div>
-                    </div>
-                    <div>
-                      <div className={cn('text-sm font-bold tabular-nums', group.totalRecalls > 0 ? 'text-brand-600' : 'text-gray-400')}>
-                        {group.totalRecalls}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-semibold text-gray-900 truncate">{group.productName}</span>
+                          <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{group.skus.length}종</span>
+                          {group.urgentCount > 0 && (
+                            <span className="flex items-center gap-1 text-[10px] font-bold bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">
+                              <AlertTriangle className="w-2.5 h-2.5" />긴급 {group.urgentCount}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 mt-1 flex-wrap">
+                          <span className="text-[11px] text-gray-400">
+                            {group.totalRecalls > 0
+                              ? <span className="text-brand-500 font-medium">{group.totalRecalls}건 회수대상</span>
+                              : '회수 불필요'}
+                            <span className="mx-1.5 text-gray-200">·</span>
+                            {group.storeCount}개 매장
+                          </span>
+                          {group.groupSellThrough !== null && (
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-gray-300">ST</span>
+                              <SellThroughBar pct={group.groupSellThrough} size="sm" />
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="text-[10px] text-gray-400">회수 대상</div>
-                    </div>
-                  </div>
-
-                  {isExpanded
-                    ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                    : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
-                </button>
-
-                {/* ── 펼쳐진 SKU별 상세 ── */}
-                {isExpanded && (
-                  <div className="border-t border-gray-100 divide-y divide-gray-50">
-                    {group.skus.map(({ product, myStocks, totalStoreQty, centerQty, myRecalls, sellThrough }) => {
-                      const optionLabel = [product.color, product.size].filter(Boolean).join(' / ')
-                      // 회수 대상 매장 먼저, 그다음 재고 많은 순
-                      const sortedStocks = [...myStocks].sort((a, b) => {
-                        const aR = myRecalls.find((r) => r.storeId === a.storeId)
-                        const bR = myRecalls.find((r) => r.storeId === b.storeId)
-                        if (aR && !bR) return -1
-                        if (!aR && bR) return 1
-                        return b.qty - a.qty
-                      })
-
-                      return (
-                        <div key={product.id} className="ml-14 mr-4 my-3 rounded-xl border border-gray-100 overflow-hidden">
-                          {/* SKU 헤더: 옵션명 + 코드 + ST% + 센터재고 */}
-                          <div className="flex items-center gap-3 px-3 py-2 bg-gray-50/80 border-b border-gray-100">
-                            <div className="flex items-center gap-1.5 text-xs flex-1 min-w-0">
-                              <Package className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
-                              {optionLabel ? (
-                                <>
-                                  <span className="font-semibold text-gray-800">{optionLabel}</span>
-                                  <span className="text-gray-400 font-mono">({product.id})</span>
-                                </>
-                              ) : (
-                                <span className="font-mono text-gray-700">{product.id}</span>
-                              )}
-                              {sellThrough !== null && (
-                                <div className="flex items-center gap-1 ml-2">
-                                  <span className="text-[10px] text-gray-300 font-normal">ST</span>
-                                  <SellThroughBar pct={sellThrough} size="xs" />
-                                </div>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1 flex-shrink-0">
-                              <Warehouse className="w-3 h-3 text-gray-400" />
-                              <span className="text-xs text-gray-500">센터재고</span>
-                              <span className={cn('text-xs font-bold ml-1', centerQty <= 0 ? 'text-red-500' : 'text-gray-800')}>
-                                {formatNumber(centerQty)}개
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* 매장별 테이블 */}
-                          <table className="w-full text-sm">
-                            <thead>
-                              <tr className="bg-white border-b border-gray-50">
-                                <th className="text-left px-4 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">
-                                  <div className="flex items-center gap-1"><Store className="w-3 h-3" /> 매장</div>
-                                </th>
-                                <th className="text-right px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">매장재고</th>
-                                <th className="text-center px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">회수 상태</th>
-                                <th className="text-right px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">권장수량</th>
-                                <th className="text-right px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">액션</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {sortedStocks.map((stock) => {
-                                const store = getStore(stock.storeId)
-                                const recall = myRecalls.find((r) => r.storeId === stock.storeId)
-                                return (
-                                  <tr key={stock.storeId}
-                                    className={cn('border-b border-gray-50 last:border-0 transition-colors',
-                                      recall ? 'hover:bg-brand-50/30' : 'hover:bg-gray-50/30')}>
-                                    {/* 매장명 */}
-                                    <td className="px-4 py-2.5">
-                                      <div className="flex items-center gap-2">
-                                        <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0',
-                                          recall ? PRIORITY_DOT[recall.priority] : 'bg-gray-200')} />
-                                        <span className="text-sm text-gray-800">{store?.name ?? stock.storeId}</span>
-                                      </div>
-                                    </td>
-
-                                    {/* 매장 재고 */}
-                                    <td className="px-3 py-2.5 text-right">
-                                      <span className="text-sm font-semibold tabular-nums text-gray-900">{formatNumber(stock.qty)}개</span>
-                                    </td>
-
-                                    {/* 회수 상태 */}
-                                    <td className="px-3 py-2.5 text-center">
-                                      {recall ? (
-                                        <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                                          <PriorityBadge priority={recall.priority} />
-                                          <StatusBadge status={recall.status} />
-                                        </div>
-                                      ) : (
-                                        <div className="flex items-center justify-center gap-1 text-[11px] text-gray-400">
-                                          <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />회수 불필요
-                                        </div>
-                                      )}
-                                    </td>
-
-                                    {/* 권장 수량 */}
-                                    <td className="px-3 py-2.5 text-right">
-                                      {recall ? (
-                                        <span className="text-sm font-bold text-brand-600 tabular-nums">
-                                          <ArrowRight className="w-3 h-3 inline mr-0.5 opacity-60" />
-                                          {formatNumber(recall.suggestedQty)}개
-                                        </span>
-                                      ) : (
-                                        <span className="text-xs text-gray-300">—</span>
-                                      )}
-                                    </td>
-
-                                    {/* 액션 */}
-                                    <td className="px-3 py-2.5 text-right">
-                                      {recall?.status === 'recommended' && (
-                                        <button onClick={() => setSelectedItem(recall)}
-                                          className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors">
-                                          회수 요청
-                                        </button>
-                                      )}
-                                      {recall?.status === 'requested' && (
-                                        <button onClick={() => updateRecallStatus(recall.id, 'in-transit')}
-                                          className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors">
-                                          이송 처리
-                                        </button>
-                                      )}
-                                      {recall?.status === 'in-transit' && (
-                                        <button onClick={() => updateRecallStatus(recall.id, 'received', recall.requestedQty)}
-                                          className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors">
-                                          입고 확인
-                                        </button>
-                                      )}
-                                      {recall?.status === 'received' && (
-                                        <span className="text-[11px] text-green-500 font-medium">완료</span>
-                                      )}
-                                    </td>
-                                  </tr>
-                                )
-                              })}
-                            </tbody>
-                          </table>
+                      <div className="hidden sm:flex items-center gap-5 text-center flex-shrink-0">
+                        <div>
+                          <div className="text-sm font-bold text-gray-900 tabular-nums">{formatNumber(group.totalStoreQty)}</div>
+                          <div className="text-[10px] text-gray-400">매장 재고</div>
                         </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            )
-          })}
+                        <div>
+                          <div className={cn('text-sm font-bold tabular-nums', group.totalRecalls > 0 ? 'text-brand-600' : 'text-gray-400')}>
+                            {group.totalRecalls}
+                          </div>
+                          <div className="text-[10px] text-gray-400">회수 대상</div>
+                        </div>
+                      </div>
+                      {isExpanded ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+                    </button>
 
-          {/* 무한 스크롤 sentinel */}
-          <div ref={sentinelRef} className="h-4" />
-          {hasMore && (
-            <div className="flex items-center justify-center py-4 gap-2 text-sm text-gray-400">
-              <svg className="w-4 h-4 animate-spin text-brand-400" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
-              </svg>
-              불러오는 중… ({visibleCount}/{pkuGroups.length})
+                    {isExpanded && (
+                      <div className="border-t border-gray-100 divide-y divide-gray-50">
+                        {group.skus.map(({ product, myStocks, totalStoreQty, centerQty, myRecalls, sellThrough }) => {
+                          const optionLabel = [product.color, product.size].filter(Boolean).join(' / ')
+                          const sortedStocks = [...myStocks].sort((a, b) => {
+                            const aR = myRecalls.find((r) => r.storeId === a.storeId)
+                            const bR = myRecalls.find((r) => r.storeId === b.storeId)
+                            if (aR && !bR) return -1
+                            if (!aR && bR) return 1
+                            return b.qty - a.qty
+                          })
+                          return (
+                            <div key={product.id} className="ml-14 mr-4 my-3 rounded-xl border border-gray-100 overflow-hidden">
+                              <div className="flex items-center gap-3 px-3 py-2 bg-gray-50/80 border-b border-gray-100">
+                                <div className="flex items-center gap-1.5 text-xs flex-1 min-w-0">
+                                  <Package className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                                  {optionLabel ? (
+                                    <><span className="font-semibold text-gray-800">{optionLabel}</span><span className="text-gray-400 font-mono">({product.id})</span></>
+                                  ) : (
+                                    <span className="font-mono text-gray-700">{product.id}</span>
+                                  )}
+                                  {sellThrough !== null && (
+                                    <div className="flex items-center gap-1 ml-2">
+                                      <span className="text-[10px] text-gray-300 font-normal">ST</span>
+                                      <SellThroughBar pct={sellThrough} size="xs" />
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 flex-shrink-0">
+                                  <div className="flex items-center gap-1">
+                                    <Store className="w-3 h-3 text-gray-400" />
+                                    <span className="text-xs text-gray-500">매장합계</span>
+                                    <span className="text-xs font-bold ml-1 text-gray-700">{formatNumber(totalStoreQty)}개</span>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <Warehouse className="w-3 h-3 text-gray-400" />
+                                    <span className="text-xs text-gray-500">센터재고</span>
+                                    <span className={cn('text-xs font-bold ml-1', centerQty <= 0 ? 'text-red-500' : 'text-gray-800')}>{formatNumber(centerQty)}개</span>
+                                  </div>
+                                </div>
+                              </div>
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="bg-white border-b border-gray-50">
+                                    <th className="text-left px-4 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide"><div className="flex items-center gap-1"><Store className="w-3 h-3" /> 매장</div></th>
+                                    <th className="text-right px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">매장재고</th>
+                                    <th className="text-center px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">회수 상태</th>
+                                    <th className="text-right px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">권장수량</th>
+                                    <th className="text-right px-3 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">액션</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {sortedStocks.map((stock) => {
+                                    const store = getStore(stock.storeId)
+                                    const recall = myRecalls.find((r) => r.storeId === stock.storeId)
+                                    return (
+                                      <tr key={stock.storeId} className={cn('border-b border-gray-50 last:border-0 transition-colors', recall ? 'hover:bg-brand-50/30' : 'hover:bg-gray-50/30')}>
+                                        <td className="px-4 py-2.5">
+                                          <div className="flex items-center gap-2">
+                                            <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', recall ? PRIORITY_DOT[recall.priority] : 'bg-gray-200')} />
+                                            <span className="text-sm text-gray-800">{store?.name ?? stock.storeId}</span>
+                                          </div>
+                                        </td>
+                                        <td className="px-3 py-2.5 text-right">
+                                          <span className="text-sm font-semibold tabular-nums text-gray-900">{formatNumber(stock.qty)}개</span>
+                                        </td>
+                                        <td className="px-3 py-2.5 text-center">
+                                          {recall ? (
+                                            <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                              <PriorityBadge priority={recall.priority} />
+                                              <StatusBadge status={recall.status} />
+                                            </div>
+                                          ) : (
+                                            <div className="flex items-center justify-center gap-1 text-[11px] text-gray-400">
+                                              <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />회수 불필요
+                                            </div>
+                                          )}
+                                        </td>
+                                        <td className="px-3 py-2.5 text-right">
+                                          {recall ? (
+                                            <span className="text-sm font-bold text-brand-600 tabular-nums">
+                                              <ArrowRight className="w-3 h-3 inline mr-0.5 opacity-60" />{formatNumber(recall.suggestedQty)}개
+                                            </span>
+                                          ) : <span className="text-xs text-gray-300">—</span>}
+                                        </td>
+                                        <td className="px-3 py-2.5 text-right">
+                                          {recall?.status === 'recommended' && (
+                                            <button onClick={() => setSelectedItem(recall)} className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors">회수 요청</button>
+                                          )}
+                                          {recall?.status === 'requested' && (
+                                            <button onClick={() => updateRecallStatus(recall.id, 'in-transit')} className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors">이송 처리</button>
+                                          )}
+                                          {recall?.status === 'in-transit' && (
+                                            <button onClick={() => updateRecallStatus(recall.id, 'received', recall.requestedQty)} className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors">입고 확인</button>
+                                          )}
+                                          {recall?.status === 'received' && (
+                                            <span className="text-[11px] text-green-500 font-medium">완료</span>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+              <ScrollFooter sentinelRef={sentinelRef} hasMore={hasMore} visibleCount={visibleCount} total={pkuGroups.length} />
             </div>
           )}
-          {!hasMore && pkuGroups.length > PAGE_SIZE && (
-            <div className="text-center py-4 text-xs text-gray-300">
-              전체 {pkuGroups.length}개 상품 표시 완료
+        </>
+      )}
+
+      {/* ── 매장별 뷰 ─────────────────────────────────────────────── */}
+      {viewMode === 'store' && (
+        <>
+          {storeGroups.length === 0 ? (
+            <EmptyState hasData={storeStocks.length > 0} />
+          ) : (
+            <div className="space-y-2">
+              {(visibleGroups as typeof storeGroups).map((group) => {
+                const isExpanded = expandedKeys.has(group.storeId)
+                return (
+                  <div key={group.storeId} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                    {/* 매장 헤더 */}
+                    <button
+                      onClick={() => toggleGroup(group.storeId)}
+                      className="w-full flex items-center gap-4 px-4 py-3.5 hover:bg-gray-50/60 transition-colors text-left"
+                    >
+                      {/* 매장 아이콘 */}
+                      <div className="w-10 h-10 rounded-xl bg-brand-50 flex items-center justify-center flex-shrink-0">
+                        <Store className="w-4 h-4 text-brand-500" />
+                      </div>
+
+                      {/* 매장명 + 요약 */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-semibold text-gray-900">{group.storeName}</span>
+                          {group.urgentCount > 0 && (
+                            <span className="flex items-center gap-1 text-[10px] font-bold bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">
+                              <AlertTriangle className="w-2.5 h-2.5" />긴급 {group.urgentCount}
+                            </span>
+                          )}
+                          {group.recallCount > 0 && (
+                            <span className="text-[10px] font-semibold text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded-full">
+                              회수 {group.recallCount}건
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 mt-1 text-[11px] text-gray-400 flex-wrap">
+                          <span>SKU {group.items.length}종</span>
+                          <span className="text-gray-200">·</span>
+                          <span>재고 합계 {formatNumber(group.totalQty)}개</span>
+                          {group.totalSalesQty > 0 && (
+                            <>
+                              <span className="text-gray-200">·</span>
+                              <span className="flex items-center gap-0.5">
+                                <TrendingUp className="w-3 h-3 text-green-400" />
+                                판매 {formatNumber(group.totalSalesQty)}건
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 우측 숫자 요약 */}
+                      <div className="hidden sm:flex items-center gap-5 text-center flex-shrink-0">
+                        <div>
+                          <div className="text-sm font-bold text-gray-900 tabular-nums">{formatNumber(group.totalQty)}</div>
+                          <div className="text-[10px] text-gray-400">총 재고</div>
+                        </div>
+                        <div>
+                          <div className="text-sm font-bold text-green-600 tabular-nums">{formatNumber(group.totalSalesQty)}</div>
+                          <div className="text-[10px] text-gray-400">판매 건수</div>
+                        </div>
+                        <div>
+                          <div className={cn('text-sm font-bold tabular-nums', group.recallCount > 0 ? 'text-brand-600' : 'text-gray-300')}>
+                            {group.recallCount}
+                          </div>
+                          <div className="text-[10px] text-gray-400">회수 대상</div>
+                        </div>
+                      </div>
+
+                      {isExpanded ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+                    </button>
+
+                    {/* 펼친 상품 테이블 */}
+                    {isExpanded && (
+                      <div className="border-t border-gray-100">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-gray-50/80 border-b border-gray-100">
+                              <th className="text-left px-4 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">상품 / 옵션</th>
+                              <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">매장재고</th>
+                              <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide hidden sm:table-cell">
+                                <div className="flex items-center justify-end gap-1">
+                                  <TrendingUp className="w-3 h-3 text-green-400" />판매량
+                                  <span className="text-gray-300 font-normal normal-case">(기간 합계)</span>
+                                </div>
+                              </th>
+                              <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide hidden sm:table-cell">일 판매속도</th>
+                              <th className="text-center px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">회수 상태</th>
+                              <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">액션</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {group.items.map((item) => (
+                              <tr key={item.productId}
+                                className={cn('border-b border-gray-50 last:border-0 transition-colors',
+                                  item.recall ? 'hover:bg-brand-50/20 bg-orange-50/10' : 'hover:bg-gray-50/30')}>
+                                {/* 상품명 */}
+                                <td className="px-4 py-2.5">
+                                  <div className="flex items-center gap-2">
+                                    {item.imageUrl ? (
+                                      <img src={item.imageUrl} alt="" className="w-7 h-7 rounded-lg object-cover flex-shrink-0 bg-gray-100"
+                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                                    ) : (
+                                      <div className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+                                        <Package className="w-3 h-3 text-gray-400" />
+                                      </div>
+                                    )}
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-semibold text-gray-800 truncate max-w-[140px]">{item.productName}</div>
+                                      {item.optionLabel && (
+                                        <div className="text-[10px] text-gray-400 truncate">{item.optionLabel}</div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </td>
+
+                                {/* 매장 재고 */}
+                                <td className="px-3 py-2.5 text-right">
+                                  <span className="text-sm font-bold tabular-nums text-gray-900">{formatNumber(item.qty)}개</span>
+                                </td>
+
+                                {/* 판매량 */}
+                                <td className="px-3 py-2.5 text-right hidden sm:table-cell">
+                                  {item.offlineSalesQty > 0 ? (
+                                    <span className="text-sm font-semibold tabular-nums text-green-600">{formatNumber(item.offlineSalesQty)}개</span>
+                                  ) : (
+                                    <span className="text-xs text-gray-300">—</span>
+                                  )}
+                                </td>
+
+                                {/* 일 판매속도 */}
+                                <td className="px-3 py-2.5 text-right hidden sm:table-cell">
+                                  {item.dailyVelocity > 0 ? (
+                                    <span className="text-xs font-medium text-gray-500 tabular-nums">
+                                      {item.dailyVelocity >= 1
+                                        ? `${item.dailyVelocity.toFixed(1)}/일`
+                                        : `${(item.dailyVelocity * 7).toFixed(1)}/주`}
+                                    </span>
+                                  ) : (
+                                    <span className="text-xs text-gray-300">—</span>
+                                  )}
+                                </td>
+
+                                {/* 회수 상태 */}
+                                <td className="px-3 py-2.5 text-center">
+                                  {item.recall ? (
+                                    <div className="flex items-center justify-center gap-1 flex-wrap">
+                                      <PriorityBadge priority={item.recall.priority} />
+                                      <StatusBadge status={item.recall.status} />
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center justify-center gap-1 text-[11px] text-gray-400">
+                                      <CheckCircle2 className="w-3 h-3 text-green-400" />정상
+                                    </div>
+                                  )}
+                                </td>
+
+                                {/* 액션 */}
+                                <td className="px-3 py-2.5 text-right">
+                                  {item.recall?.status === 'recommended' && (
+                                    <button onClick={() => setSelectedItem(item.recall!)}
+                                      className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                                      회수 요청
+                                    </button>
+                                  )}
+                                  {item.recall?.status === 'requested' && (
+                                    <button onClick={() => updateRecallStatus(item.recall!.id, 'in-transit')}
+                                      className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                                      이송 처리
+                                    </button>
+                                  )}
+                                  {item.recall?.status === 'in-transit' && (
+                                    <button onClick={() => updateRecallStatus(item.recall!.id, 'received', item.recall!.requestedQty)}
+                                      className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                                      입고 확인
+                                    </button>
+                                  )}
+                                  {item.recall?.status === 'received' && (
+                                    <span className="text-[11px] text-green-500 font-medium">완료</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+              <ScrollFooter sentinelRef={sentinelRef} hasMore={hasMore} visibleCount={visibleCount} total={storeGroups.length} />
             </div>
           )}
-        </div>
+        </>
       )}
 
       {selectedItem && (
@@ -424,7 +684,43 @@ export default function StoreView() {
   )
 }
 
-// ─── 요약 카드 ───────────────────────────────────────────────────
+// ─── 공통 컴포넌트 ───────────────────────────────────────────────
+function EmptyState({ hasData }: { hasData: boolean }) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
+      <Package className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+      <p className="text-sm text-gray-500">
+        {!hasData ? '이지체인 매장 재고 데이터를 먼저 업로드하세요' : '검색 결과가 없습니다'}
+      </p>
+    </div>
+  )
+}
+
+function ScrollFooter({ sentinelRef, hasMore, visibleCount, total }: {
+  sentinelRef: React.RefObject<HTMLDivElement>
+  hasMore: boolean
+  visibleCount: number
+  total: number
+}) {
+  return (
+    <>
+      <div ref={sentinelRef} className="h-4" />
+      {hasMore && (
+        <div className="flex items-center justify-center py-4 gap-2 text-sm text-gray-400">
+          <svg className="w-4 h-4 animate-spin text-brand-400" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+          </svg>
+          불러오는 중… ({visibleCount}/{total})
+        </div>
+      )}
+      {!hasMore && total > PAGE_SIZE && (
+        <div className="text-center py-4 text-xs text-gray-300">전체 {total}개 표시 완료</div>
+      )}
+    </>
+  )
+}
+
 function SummaryCard({ label, value, sub, color }: {
   label: string; value: number; sub: string; color: string
 }) {
