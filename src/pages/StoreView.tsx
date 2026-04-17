@@ -15,6 +15,25 @@ const PRIORITY_DOT: Record<RecallPriority, string> = {
   urgent: 'bg-red-500', high: 'bg-orange-400', medium: 'bg-yellow-400', low: 'bg-gray-300',
 }
 
+// ─── 커스텀 툴팁 ────────────────────────────────────────────────
+function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  return (
+    <span className="relative group inline-flex items-center cursor-help">
+      {children}
+      <span className={cn(
+        'pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50',
+        'w-72 rounded-xl bg-gray-900 text-white text-xs leading-relaxed p-3 shadow-2xl',
+        'opacity-0 group-hover:opacity-100 transition-opacity duration-150',
+        'whitespace-pre-line text-left'
+      )}>
+        {text}
+        {/* 말풍선 꼬리 */}
+        <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
+      </span>
+    </span>
+  )
+}
+
 // ─── Sell-Through 게이지 바 ──────────────────────────────────────
 function SellThroughBar({ pct, size = 'sm' }: { pct: number | null; size?: 'sm' | 'xs' }) {
   if (pct === null) return null
@@ -637,12 +656,15 @@ export default function StoreView() {
                                     <div className="text-sm font-bold tabular-nums text-gray-900">{formatNumber(pku.totalStoreQty)}개</div>
                                     <div className="text-[10px] text-gray-400">이 매장 재고</div>
                                   </div>
-                                  <div title={salesPeriodLabel}>
+                                  <div>
                                     <div className="text-sm font-semibold tabular-nums text-green-600">
                                       {pku.totalSalesQty > 0 ? formatNumber(pku.totalSalesQty) + '개' : '—'}
                                     </div>
                                     <div className="text-[10px] text-gray-400 flex items-center gap-0.5">
-                                      판매량 <span className="text-gray-300 cursor-help">ⓘ</span>
+                                      판매량
+                                      <Tooltip text={salesPeriodLabel}>
+                                        <span className="text-gray-400 ml-0.5">ⓘ</span>
+                                      </Tooltip>
                                     </div>
                                   </div>
                                 </div>
@@ -664,13 +686,12 @@ export default function StoreView() {
                                         <th className="text-left px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">옵션 (색상/사이즈)</th>
                                         <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">매장 재고</th>
                                         <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide hidden sm:table-cell">
-                                          <div className="flex items-center justify-end gap-1 group relative">
+                                          <div className="flex items-center justify-end gap-1">
                                             <TrendingUp className="w-3 h-3 text-green-400" />
                                             <span>판매량</span>
-                                            <span
-                                              title={salesPeriodLabel}
-                                              className="text-gray-300 cursor-help hover:text-gray-400 transition-colors"
-                                            >ⓘ</span>
+                                            <Tooltip text={salesPeriodLabel}>
+                                              <span className="text-gray-400">ⓘ</span>
+                                            </Tooltip>
                                           </div>
                                         </th>
                                         <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide hidden sm:table-cell">일 판매속도</th>
