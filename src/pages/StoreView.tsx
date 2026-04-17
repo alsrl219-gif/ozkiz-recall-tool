@@ -39,6 +39,7 @@ export default function StoreView() {
   const [selectedItem, setSelectedItem] = useState<RecallItem | null>(null)
   const [filterMode, setFilterMode] = useState<'all' | 'recall'>('all')
   const [viewMode, setViewMode] = useState<'product' | 'store'>('product')
+  const [expandedPkuKeys, setExpandedPkuKeys] = useState<Set<string>>(new Set())
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const sentinelRef = useRef<HTMLDivElement>(null)
 
@@ -104,57 +105,96 @@ export default function StoreView() {
       .sort((a, b) => b.urgentCount - a.urgentCount || b.totalRecalls - a.totalRecalls)
   }, [products, storeStocks, centerStocks, recallItems, periodSales, search, filterMode, stockedProductIds])
 
-  // ── ② 매장별 그룹 ─────────────────────────────────────────────
-  const storeGroups = useMemo(() => {
-    type StoreItem = {
+  // ── ② 매장별 그룹 (PKU → SKU 2단계) ─────────────────────────
+  const { storeGroups, salesPeriodLabel } = useMemo(() => {
+    type SkuDetail = {
       productId: string
-      productName: string
       optionLabel: string
       imageUrl?: string
       qty: number
-      offlineSalesQty: number    // 기간 합산 오프라인 판매 수량 (상품 전체)
-      dailyVelocity: number      // 일평균 판매 속도
+      offlineSalesQty: number   // 전체 오프라인 판매 합계 (매장 구분 없음)
+      dailyVelocity: number
       recall: RecallItem | undefined
+    }
+    type PkuInStore = {
+      productName: string
+      imageUrl?: string
+      skus: SkuDetail[]
+      totalStoreQty: number
+      totalSalesQty: number     // 상품 전체 오프라인 판매 합계
+      dailyVelocity: number
+      recallCount: number
+      urgentCount: number
     }
     type StoreGroup = {
       storeId: string
       storeName: string
-      items: StoreItem[]
+      pkuGroups: PkuInStore[]
+      pkuCount: number
       totalQty: number
-      totalSalesQty: number
       recallCount: number
       urgentCount: number
     }
 
-    const map = new Map<string, StoreGroup>()
-
-    // 오프라인 판매 데이터 캐시
-    const salesCache = new Map<string, { qty: number; velocity: number }>()
-    for (const p of periodSales) {
-      if (p.channel !== 'offline') continue
-      const cur = salesCache.get(p.productId) ?? { qty: 0, velocity: 0 }
-      salesCache.set(p.productId, {
-        qty: cur.qty + p.totalQty,
-        velocity: cur.velocity + p.dailyVelocity,
-      })
+    // 판매 기간 정보 추출
+    const offlineSales = periodSales.filter((p) => p.channel === 'offline')
+    let periodStart = '', periodEnd = '', periodDays = 0
+    if (offlineSales.length > 0) {
+      periodStart = offlineSales.reduce((m, p) => p.periodStart < m ? p.periodStart : m, offlineSales[0].periodStart)
+      periodEnd   = offlineSales.reduce((m, p) => p.periodEnd   > m ? p.periodEnd   : m, offlineSales[0].periodEnd)
+      periodDays  = Math.max(...offlineSales.map((p) => p.periodDays))
     }
+    const fmt = (d: string) => d ? d.replace(/-/g, '.') : ''
+    const label = periodStart
+      ? `오프라인 전체 매장 판매 합계\n기간: ${fmt(periodStart)} ~ ${fmt(periodEnd)} (${periodDays}일)\n※ 매장별 분리 집계 데이터가 없어 전체 매장 합산 값으로 표시됩니다`
+      : '오프라인 판매 합계 (기간 데이터 없음)'
+
+    // 오프라인 판매 데이터 캐시 (productId → 집계)
+    const salesCache = new Map<string, { qty: number; velocity: number }>()
+    for (const p of offlineSales) {
+      const cur = salesCache.get(p.productId) ?? { qty: 0, velocity: 0 }
+      salesCache.set(p.productId, { qty: cur.qty + p.totalQty, velocity: cur.velocity + p.dailyVelocity })
+    }
+
+    // storeId → StoreGroup
+    const storeMap = new Map<string, StoreGroup>()
+    // storeId+productName → PkuInStore
+    const pkuMap = new Map<string, PkuInStore>()
 
     for (const stock of storeStocks) {
       if (stock.qty <= 0) continue
       const store = getStore(stock.storeId)
-      if (!map.has(stock.storeId)) {
-        map.set(stock.storeId, {
+      if (!storeMap.has(stock.storeId)) {
+        storeMap.set(stock.storeId, {
           storeId: stock.storeId,
           storeName: store?.name ?? stock.storeId,
-          items: [],
+          pkuGroups: [],
+          pkuCount: 0,
           totalQty: 0,
-          totalSalesQty: 0,
           recallCount: 0,
           urgentCount: 0,
         })
       }
-      const g = map.get(stock.storeId)!
+      const sg = storeMap.get(stock.storeId)!
       const product = products.find((p) => p.id === stock.productId)
+      const productName = product?.name ?? stock.productId
+      const pkuKey = `${stock.storeId}::${productName}`
+
+      if (!pkuMap.has(pkuKey)) {
+        const pku: PkuInStore = {
+          productName,
+          imageUrl: product?.imageUrl,
+          skus: [],
+          totalStoreQty: 0,
+          totalSalesQty: 0,
+          dailyVelocity: 0,
+          recallCount: 0,
+          urgentCount: 0,
+        }
+        pkuMap.set(pkuKey, pku)
+        sg.pkuGroups.push(pku)
+      }
+      const pku = pkuMap.get(pkuKey)!
       const optionLabel = [product?.color, product?.size].filter(Boolean).join(' / ')
       const sales = salesCache.get(stock.productId) ?? { qty: 0, velocity: 0 }
       const recall = recallItems.find(
@@ -162,33 +202,32 @@ export default function StoreView() {
           && r.status !== 'received' && r.status !== 'cancelled'
       )
 
-      g.items.push({
-        productId: stock.productId,
-        productName: product?.name ?? stock.productId,
-        optionLabel,
-        imageUrl: product?.imageUrl,
-        qty: stock.qty,
-        offlineSalesQty: sales.qty,
-        dailyVelocity: sales.velocity,
-        recall,
-      })
-      g.totalQty += stock.qty
-      g.totalSalesQty += sales.qty
-      if (recall) {
-        g.recallCount++
-        if (recall.priority === 'urgent') g.urgentCount++
+      pku.skus.push({ productId: stock.productId, optionLabel, imageUrl: product?.imageUrl, qty: stock.qty, offlineSalesQty: sales.qty, dailyVelocity: sales.velocity, recall })
+      pku.totalStoreQty += stock.qty
+      // 대표 SKU 1개의 판매량만 PKU에 기록 (첫 번째 SKU 기준으로 중복 방지)
+      if (pku.skus.length === 1) {
+        pku.totalSalesQty = sales.qty
+        pku.dailyVelocity = sales.velocity
       }
+      if (recall) { pku.recallCount++; if (recall.priority === 'urgent') pku.urgentCount++ }
+      sg.totalQty += stock.qty
+      if (recall) { sg.recallCount++; if (recall.priority === 'urgent') sg.urgentCount++ }
     }
 
-    return Array.from(map.values())
+    const result = Array.from(storeMap.values())
       .map((g) => ({
         ...g,
-        // 재고 많은 순으로 아이템 정렬 (회수 대상 먼저)
-        items: [...g.items].sort((a, b) => {
-          if (a.recall && !b.recall) return -1
-          if (!a.recall && b.recall) return 1
-          return b.qty - a.qty
-        }),
+        pkuCount: g.pkuGroups.length,
+        pkuGroups: g.pkuGroups
+          .map((pku) => ({
+            ...pku,
+            skus: [...pku.skus].sort((a, b) => {
+              if (a.recall && !b.recall) return -1
+              if (!a.recall && b.recall) return 1
+              return b.qty - a.qty
+            }),
+          }))
+          .sort((a, b) => b.urgentCount - a.urgentCount || b.recallCount - a.recallCount || b.totalStoreQty - a.totalStoreQty),
       }))
       .filter((g) => filterMode === 'all' || g.recallCount > 0)
       .filter((g) => {
@@ -196,15 +235,20 @@ export default function StoreView() {
         const q = search.toLowerCase()
         return (
           g.storeName.toLowerCase().includes(q) ||
-          g.items.some((i) => i.productName.toLowerCase().includes(q) || i.productId.toLowerCase().includes(q))
+          g.pkuGroups.some((pku) =>
+            pku.productName.toLowerCase().includes(q) ||
+            pku.skus.some((sku) => sku.productId.toLowerCase().includes(q))
+          )
         )
       })
       .sort((a, b) => b.urgentCount - a.urgentCount || b.recallCount - a.recallCount || b.totalQty - a.totalQty)
+
+    return { storeGroups: result, salesPeriodLabel: label }
   }, [storeStocks, stores, products, periodSales, recallItems, search, filterMode, getStore])
 
   // ── 무한 스크롤 ───────────────────────────────────────────────
   const currentList = viewMode === 'product' ? pkuGroups : storeGroups
-  useEffect(() => { setVisibleCount(PAGE_SIZE); setExpandedKeys(new Set()) }, [search, filterMode, viewMode])
+  useEffect(() => { setVisibleCount(PAGE_SIZE); setExpandedKeys(new Set()); setExpandedPkuKeys(new Set()) }, [search, filterMode, viewMode])
 
   const loadMore = useCallback(() => {
     setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, currentList.length))
@@ -226,6 +270,14 @@ export default function StoreView() {
 
   function toggleGroup(key: string) {
     setExpandedKeys((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
+  function togglePku(key: string) {
+    setExpandedPkuKeys((prev) => {
       const next = new Set(prev)
       next.has(key) ? next.delete(key) : next.add(key)
       return next
@@ -517,18 +569,9 @@ export default function StoreView() {
                           )}
                         </div>
                         <div className="flex items-center gap-3 mt-1 text-[11px] text-gray-400 flex-wrap">
-                          <span>SKU {group.items.length}종</span>
+                          <span>상품 {group.pkuCount}종</span>
                           <span className="text-gray-200">·</span>
                           <span>재고 합계 {formatNumber(group.totalQty)}개</span>
-                          {group.totalSalesQty > 0 && (
-                            <>
-                              <span className="text-gray-200">·</span>
-                              <span className="flex items-center gap-0.5">
-                                <TrendingUp className="w-3 h-3 text-green-400" />
-                                판매 {formatNumber(group.totalSalesQty)}건
-                              </span>
-                            </>
-                          )}
                         </div>
                       </div>
 
@@ -537,10 +580,6 @@ export default function StoreView() {
                         <div>
                           <div className="text-sm font-bold text-gray-900 tabular-nums">{formatNumber(group.totalQty)}</div>
                           <div className="text-[10px] text-gray-400">총 재고</div>
-                        </div>
-                        <div>
-                          <div className="text-sm font-bold text-green-600 tabular-nums">{formatNumber(group.totalSalesQty)}</div>
-                          <div className="text-[10px] text-gray-400">판매 건수</div>
                         </div>
                         <div>
                           <div className={cn('text-sm font-bold tabular-nums', group.recallCount > 0 ? 'text-brand-600' : 'text-gray-300')}>
@@ -553,119 +592,170 @@ export default function StoreView() {
                       {isExpanded ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
                     </button>
 
-                    {/* 펼친 상품 테이블 */}
+                    {/* ── 펼친 PKU 목록 ── */}
                     {isExpanded && (
-                      <div className="border-t border-gray-100">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="bg-gray-50/80 border-b border-gray-100">
-                              <th className="text-left px-4 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">상품 / 옵션</th>
-                              <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">매장재고</th>
-                              <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide hidden sm:table-cell">
-                                <div className="flex items-center justify-end gap-1">
-                                  <TrendingUp className="w-3 h-3 text-green-400" />판매량
-                                  <span className="text-gray-300 font-normal normal-case">(기간 합계)</span>
-                                </div>
-                              </th>
-                              <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide hidden sm:table-cell">일 판매속도</th>
-                              <th className="text-center px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">회수 상태</th>
-                              <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">액션</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {group.items.map((item) => (
-                              <tr key={item.productId}
-                                className={cn('border-b border-gray-50 last:border-0 transition-colors',
-                                  item.recall ? 'hover:bg-brand-50/20 bg-orange-50/10' : 'hover:bg-gray-50/30')}>
-                                {/* 상품명 */}
-                                <td className="px-4 py-2.5">
-                                  <div className="flex items-center gap-2">
-                                    {item.imageUrl ? (
-                                      <img src={item.imageUrl} alt="" className="w-7 h-7 rounded-lg object-cover flex-shrink-0 bg-gray-100"
-                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
-                                    ) : (
-                                      <div className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
-                                        <Package className="w-3 h-3 text-gray-400" />
-                                      </div>
+                      <div className="border-t border-gray-100 divide-y divide-gray-50">
+                        {group.pkuGroups.map((pku) => {
+                          const pkuKey = `${group.storeId}::${pku.productName}`
+                          const isPkuExpanded = expandedPkuKeys.has(pkuKey)
+                          return (
+                            <div key={pku.productName}>
+                              {/* PKU 행 */}
+                              <button
+                                onClick={() => togglePku(pkuKey)}
+                                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50/70 transition-colors text-left"
+                              >
+                                {pku.imageUrl ? (
+                                  <img src={pku.imageUrl} alt="" className="w-9 h-9 rounded-lg object-cover flex-shrink-0 bg-gray-100"
+                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                                ) : (
+                                  <div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+                                    <Package className="w-4 h-4 text-gray-300" />
+                                  </div>
+                                )}
+
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-sm font-semibold text-gray-800 truncate">{pku.productName}</span>
+                                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{pku.skus.length}가지 옵션</span>
+                                    {pku.urgentCount > 0 && (
+                                      <span className="text-[10px] font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded-full">
+                                        긴급 {pku.urgentCount}
+                                      </span>
                                     )}
-                                    <div className="min-w-0">
-                                      <div className="text-xs font-semibold text-gray-800 truncate max-w-[140px]">{item.productName}</div>
-                                      {item.optionLabel && (
-                                        <div className="text-[10px] text-gray-400 truncate">{item.optionLabel}</div>
-                                      )}
+                                    {pku.recallCount > 0 && (
+                                      <span className="text-[10px] font-semibold text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded-full">
+                                        회수 {pku.recallCount}건
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* 우측: 재고 / 판매량 / 화살표 */}
+                                <div className="hidden sm:flex items-center gap-4 text-center flex-shrink-0">
+                                  <div>
+                                    <div className="text-sm font-bold tabular-nums text-gray-900">{formatNumber(pku.totalStoreQty)}개</div>
+                                    <div className="text-[10px] text-gray-400">이 매장 재고</div>
+                                  </div>
+                                  <div title={salesPeriodLabel}>
+                                    <div className="text-sm font-semibold tabular-nums text-green-600">
+                                      {pku.totalSalesQty > 0 ? formatNumber(pku.totalSalesQty) + '개' : '—'}
+                                    </div>
+                                    <div className="text-[10px] text-gray-400 flex items-center gap-0.5">
+                                      판매량 <span className="text-gray-300 cursor-help">ⓘ</span>
                                     </div>
                                   </div>
-                                </td>
+                                </div>
+                                <div className="sm:hidden text-right flex-shrink-0">
+                                  <div className="text-sm font-bold tabular-nums">{formatNumber(pku.totalStoreQty)}개</div>
+                                </div>
 
-                                {/* 매장 재고 */}
-                                <td className="px-3 py-2.5 text-right">
-                                  <span className="text-sm font-bold tabular-nums text-gray-900">{formatNumber(item.qty)}개</span>
-                                </td>
+                                {isPkuExpanded
+                                  ? <ChevronDown className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                                  : <ChevronRight className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />}
+                              </button>
 
-                                {/* 판매량 */}
-                                <td className="px-3 py-2.5 text-right hidden sm:table-cell">
-                                  {item.offlineSalesQty > 0 ? (
-                                    <span className="text-sm font-semibold tabular-nums text-green-600">{formatNumber(item.offlineSalesQty)}개</span>
-                                  ) : (
-                                    <span className="text-xs text-gray-300">—</span>
-                                  )}
-                                </td>
-
-                                {/* 일 판매속도 */}
-                                <td className="px-3 py-2.5 text-right hidden sm:table-cell">
-                                  {item.dailyVelocity > 0 ? (
-                                    <span className="text-xs font-medium text-gray-500 tabular-nums">
-                                      {item.dailyVelocity >= 1
-                                        ? `${item.dailyVelocity.toFixed(1)}/일`
-                                        : `${(item.dailyVelocity * 7).toFixed(1)}/주`}
-                                    </span>
-                                  ) : (
-                                    <span className="text-xs text-gray-300">—</span>
-                                  )}
-                                </td>
-
-                                {/* 회수 상태 */}
-                                <td className="px-3 py-2.5 text-center">
-                                  {item.recall ? (
-                                    <div className="flex items-center justify-center gap-1 flex-wrap">
-                                      <PriorityBadge priority={item.recall.priority} />
-                                      <StatusBadge status={item.recall.status} />
-                                    </div>
-                                  ) : (
-                                    <div className="flex items-center justify-center gap-1 text-[11px] text-gray-400">
-                                      <CheckCircle2 className="w-3 h-3 text-green-400" />정상
-                                    </div>
-                                  )}
-                                </td>
-
-                                {/* 액션 */}
-                                <td className="px-3 py-2.5 text-right">
-                                  {item.recall?.status === 'recommended' && (
-                                    <button onClick={() => setSelectedItem(item.recall!)}
-                                      className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
-                                      회수 요청
-                                    </button>
-                                  )}
-                                  {item.recall?.status === 'requested' && (
-                                    <button onClick={() => updateRecallStatus(item.recall!.id, 'in-transit')}
-                                      className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
-                                      이송 처리
-                                    </button>
-                                  )}
-                                  {item.recall?.status === 'in-transit' && (
-                                    <button onClick={() => updateRecallStatus(item.recall!.id, 'received', item.recall!.requestedQty)}
-                                      className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
-                                      입고 확인
-                                    </button>
-                                  )}
-                                  {item.recall?.status === 'received' && (
-                                    <span className="text-[11px] text-green-500 font-medium">완료</span>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                              {/* SKU 상세 테이블 */}
+                              {isPkuExpanded && (
+                                <div className="mx-4 mb-3 rounded-xl border border-gray-100 overflow-hidden">
+                                  <table className="w-full text-sm">
+                                    <thead>
+                                      <tr className="bg-gray-50/80 border-b border-gray-100">
+                                        <th className="text-left px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">옵션 (색상/사이즈)</th>
+                                        <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">매장 재고</th>
+                                        <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide hidden sm:table-cell">
+                                          <div className="flex items-center justify-end gap-1 group relative">
+                                            <TrendingUp className="w-3 h-3 text-green-400" />
+                                            <span>판매량</span>
+                                            <span
+                                              title={salesPeriodLabel}
+                                              className="text-gray-300 cursor-help hover:text-gray-400 transition-colors"
+                                            >ⓘ</span>
+                                          </div>
+                                        </th>
+                                        <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide hidden sm:table-cell">일 판매속도</th>
+                                        <th className="text-center px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">회수 상태</th>
+                                        <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">액션</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {pku.skus.map((sku) => (
+                                        <tr key={sku.productId}
+                                          className={cn('border-b border-gray-50 last:border-0 transition-colors',
+                                            sku.recall ? 'bg-orange-50/20 hover:bg-brand-50/30' : 'hover:bg-gray-50/40')}>
+                                          {/* 옵션 */}
+                                          <td className="px-3 py-2.5">
+                                            <div className="text-xs font-semibold text-gray-700">
+                                              {sku.optionLabel || '기본'}
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 font-mono">{sku.productId}</div>
+                                          </td>
+                                          {/* 재고 */}
+                                          <td className="px-3 py-2.5 text-right">
+                                            <span className="text-sm font-bold tabular-nums text-gray-900">{formatNumber(sku.qty)}개</span>
+                                          </td>
+                                          {/* 판매량 */}
+                                          <td className="px-3 py-2.5 text-right hidden sm:table-cell">
+                                            {sku.offlineSalesQty > 0 ? (
+                                              <span className="text-sm font-semibold tabular-nums text-green-600">{formatNumber(sku.offlineSalesQty)}개</span>
+                                            ) : <span className="text-xs text-gray-300">—</span>}
+                                          </td>
+                                          {/* 일 판매속도 */}
+                                          <td className="px-3 py-2.5 text-right hidden sm:table-cell">
+                                            {sku.dailyVelocity > 0 ? (
+                                              <span className="text-xs font-medium text-gray-500 tabular-nums">
+                                                {sku.dailyVelocity >= 1
+                                                  ? `${sku.dailyVelocity.toFixed(1)}/일`
+                                                  : `${(sku.dailyVelocity * 7).toFixed(1)}/주`}
+                                              </span>
+                                            ) : <span className="text-xs text-gray-300">—</span>}
+                                          </td>
+                                          {/* 회수 상태 */}
+                                          <td className="px-3 py-2.5 text-center">
+                                            {sku.recall ? (
+                                              <div className="flex items-center justify-center gap-1 flex-wrap">
+                                                <PriorityBadge priority={sku.recall.priority} />
+                                                <StatusBadge status={sku.recall.status} />
+                                              </div>
+                                            ) : (
+                                              <div className="flex items-center justify-center gap-1 text-[11px] text-gray-400">
+                                                <CheckCircle2 className="w-3 h-3 text-green-400" />정상
+                                              </div>
+                                            )}
+                                          </td>
+                                          {/* 액션 */}
+                                          <td className="px-3 py-2.5 text-right">
+                                            {sku.recall?.status === 'recommended' && (
+                                              <button onClick={() => setSelectedItem(sku.recall!)}
+                                                className="px-2.5 py-1.5 bg-brand-500 hover:bg-brand-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                                                회수 요청
+                                              </button>
+                                            )}
+                                            {sku.recall?.status === 'requested' && (
+                                              <button onClick={() => updateRecallStatus(sku.recall!.id, 'in-transit')}
+                                                className="px-2.5 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                                                이송 처리
+                                              </button>
+                                            )}
+                                            {sku.recall?.status === 'in-transit' && (
+                                              <button onClick={() => updateRecallStatus(sku.recall!.id, 'received', sku.recall!.requestedQty)}
+                                                className="px-2.5 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap">
+                                                입고 확인
+                                              </button>
+                                            )}
+                                            {sku.recall?.status === 'received' && (
+                                              <span className="text-[11px] text-green-500 font-medium">완료</span>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
                   </div>
