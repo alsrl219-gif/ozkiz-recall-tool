@@ -16,19 +16,33 @@ const PRIORITY_DOT: Record<RecallPriority, string> = {
 }
 
 // ─── 커스텀 툴팁 ────────────────────────────────────────────────
-function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+function Tooltip({ text, children, align = 'right' }: {
+  text: string
+  children: React.ReactNode
+  align?: 'center' | 'right'  // right: 오른쪽 정렬(왼쪽으로 펼침), center: 가운데 정렬
+}) {
+  const boxPos = align === 'right'
+    ? 'right-0'           // 트리거 오른쪽 끝 기준 → 왼쪽으로 펼쳐짐
+    : 'left-1/2 -translate-x-1/2'  // 가운데 정렬
+  const tailPos = align === 'right'
+    ? 'right-2'
+    : 'left-1/2 -translate-x-1/2'
   return (
     <span className="relative group inline-flex items-center cursor-help">
       {children}
       <span className={cn(
-        'pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50',
+        'pointer-events-none absolute bottom-full mb-2 z-[9999]',
+        boxPos,
         'w-72 rounded-xl bg-gray-900 text-white text-xs leading-relaxed p-3 shadow-2xl',
         'opacity-0 group-hover:opacity-100 transition-opacity duration-150',
         'whitespace-pre-line text-left'
       )}>
         {text}
         {/* 말풍선 꼬리 */}
-        <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
+        <span className={cn(
+          'absolute top-full border-4 border-transparent border-t-gray-900',
+          tailPos
+        )} />
       </span>
     </span>
   )
@@ -679,7 +693,7 @@ export default function StoreView() {
 
                               {/* SKU 상세 테이블 */}
                               {isPkuExpanded && (
-                                <div className="mx-4 mb-3 rounded-xl border border-gray-100 overflow-hidden">
+                                <div className="mx-4 mb-3 rounded-xl border border-gray-100 overflow-visible">
                                   <table className="w-full text-sm">
                                     <thead>
                                       <tr className="bg-gray-50/80 border-b border-gray-100">
