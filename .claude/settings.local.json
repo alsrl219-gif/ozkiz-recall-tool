@@ -34,14 +34,23 @@
       "Bash(npx tsc:*)",
       "Bash(python -c ':*)",
       "Bash(npx playwright:*)",
-      "Bash(gh pr create --title 'Claude Code 도구 허용 권한 업데이트 \\(settings.local.json\\)' --body ':*)",
       "Bash(where gh:*)",
       "Bash(winget list:*)",
       "Bash(cmd.exe /c \"where gh 2>nul\")",
       "Read(//c/Program Files/GitHub CLI/**)",
       "Bash(cmd.exe /c \"where gh\")",
       "Bash(cmd.exe /c \"gh --version\")",
-      "Bash(python3 -c \"import sys,json; prs=json.load\\(sys.stdin\\); print\\(prs[0]['html_url'] if prs else 'NO_PR'\\)\")"
+      "Bash(python3 -c \"import sys,json; prs=json.load\\(sys.stdin\\); print\\(prs[0]['html_url'] if prs else 'NO_PR'\\)\")",
+      "Bash(cat vercel.json)",
+      "Bash(cat .vercel/project.json)",
+      "Bash(gh pr *)",
+      "Bash(powershell -Command \"Get-Command gh -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source\")",
+      "Bash(cmd /c \"where gh 2>nul || echo NOT_FOUND\")",
+      "Bash(git credential *)",
+      "Bash(curl -s *)",
+      "Bash(node -e ' *)",
+      "Bash(node update-pr.js)",
+      "Bash(node update-pr.cjs)"
     ]
   }
 }
